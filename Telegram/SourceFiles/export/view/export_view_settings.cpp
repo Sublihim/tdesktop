@@ -211,11 +211,6 @@ void SettingsWidget::setupOtherOptions(
 
 void SettingsWidget::setupPathAndFormat(
 		not_null<Ui::VerticalLayout*> container) {
-	if (_singlePeerId != 0) {
-		addLocationLabel(container);
-		addLimitsLabel(container);
-		return;
-	}
 	const auto formatGroup = std::make_shared<Ui::RadioenumGroup<Format>>(
 		readData().format);
 	formatGroup->setChangedCallback([=](Format format) {
@@ -233,10 +228,15 @@ void SettingsWidget::setupPathAndFormat(
 				st::defaultBoxCheckbox),
 			st::exportSettingPadding);
 	};
-	addHeader(container, lng_export_header_format);
-	addLocationLabel(container);
 	addFormatOption(lng_export_option_html, Format::Html);
 	addFormatOption(lng_export_option_json, Format::Json);
+	if (_singlePeerId != 0) {
+		addLocationLabel(container);
+		addLimitsLabel(container);
+	} else {
+		addHeader(container, lng_export_header_format);
+		addLocationLabel(container);
+	}
 }
 
 void SettingsWidget::addLocationLabel(
