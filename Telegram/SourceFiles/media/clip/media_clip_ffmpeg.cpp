@@ -5,10 +5,10 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
-#include "media/media_clip_ffmpeg.h"
+#include "media/clip/media_clip_ffmpeg.h"
 
-#include "media/media_audio.h"
-#include "media/media_child_ffmpeg_loader.h"
+#include "media/audio/media_audio.h"
+#include "media/audio/media_child_ffmpeg_loader.h"
 #include "storage/file_download.h"
 
 namespace Media {
@@ -35,7 +35,7 @@ QImage createAlignedImage(QSize size) {
 	auto cleanupdata = static_cast<void*>(buffer);
 	auto bufferval = reinterpret_cast<uintptr_t>(buffer);
 	auto alignedbuffer = buffer + ((bufferval % kAlignImageBy) ? (kAlignImageBy - (bufferval % kAlignImageBy)) : 0);
-	return QImage(alignedbuffer, width, height, bytesperline, QImage::Format_ARGB32, alignedImageBufferCleanupHandler, cleanupdata);
+	return QImage(alignedbuffer, width, height, bytesperline, QImage::Format_ARGB32_Premultiplied, alignedImageBufferCleanupHandler, cleanupdata);
 }
 
 bool isAlignedImage(const QImage &image) {

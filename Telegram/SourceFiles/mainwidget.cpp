@@ -63,7 +63,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/download_path_box.h"
 #include "boxes/connection_box.h"
 #include "storage/localstorage.h"
-#include "media/media_audio.h"
+#include "media/audio/media_audio.h"
 #include "media/player/media_player_panel.h"
 #include "media/player/media_player_widget.h"
 #include "media/player/media_player_volume_controller.h"
@@ -501,7 +501,7 @@ AuthSession &MainWidget::session() const {
 
 void MainWidget::setupConnectingWidget() {
 	using namespace rpl::mappers;
-	_connecting = Window::ConnectingWidget::CreateDefaultWidget(
+	_connecting = std::make_unique<Window::ConnectionState>(
 		this,
 		Window::AdaptiveIsOneColumn() | rpl::map(!_1));
 }
@@ -1629,14 +1629,17 @@ void MainWidget::checkChatBackground() {
 		return;
 	}
 
-	_background->generating = Data::ReadImageAsync(document, [=](
-			QImage &&image) {
+	const auto generateCallback = [=](QImage &&image) {
 		const auto background = base::take(_background);
 		const auto ready = image.isNull()
 			? Data::DefaultWallPaper()
 			: background->data;
 		setReadyChatBackground(ready, std::move(image));
-	});
+	};
+	_background->generating = Data::ReadImageAsync(
+		document,
+		Window::Theme::ProcessBackgroundImage,
+		generateCallback);
 }
 
 Image *MainWidget::newBackgroundThumb() {
