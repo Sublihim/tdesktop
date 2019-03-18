@@ -36,6 +36,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "auth_session.h"
 #include "boxes/confirm_box.h"
+#include "boxes/stickers_box.h"
+#include "boxes/sticker_set_box.h"
 #include "window/notifications_manager.h"
 #include "window/window_lock_widgets.h"
 #include "window/window_controller.h"
@@ -81,11 +83,11 @@ constexpr auto kUnreadMentionsFirstRequestLimit = 10;
 constexpr auto kUnreadMentionsNextRequestLimit = 100;
 constexpr auto kSharedMediaLimit = 100;
 constexpr auto kFeedMessagesLimit = 50;
-constexpr auto kReadFeaturedSetsTimeout = TimeMs(1000);
-constexpr auto kFileLoaderQueueStopTimeout = TimeMs(5000);
-constexpr auto kFeedReadTimeout = TimeMs(1000);
-constexpr auto kStickersByEmojiInvalidateTimeout = TimeMs(60 * 60 * 1000);
-constexpr auto kNotifySettingSaveTimeout = TimeMs(1000);
+constexpr auto kReadFeaturedSetsTimeout = crl::time(1000);
+constexpr auto kFileLoaderQueueStopTimeout = crl::time(5000);
+constexpr auto kFeedReadTimeout = crl::time(1000);
+constexpr auto kStickersByEmojiInvalidateTimeout = crl::time(60 * 60 * 1000);
+constexpr auto kNotifySettingSaveTimeout = crl::time(1000);
 
 using SimpleFileLocationId = Data::SimpleFileLocationId;
 using DocumentFileLocationId = Data::DocumentFileLocationId;
@@ -106,7 +108,7 @@ MTPVector<MTPDocumentAttribute> ComposeSendingDocumentAttributes(
 	const auto dimensions = document->dimensions;
 	auto attributes = QVector<MTPDocumentAttribute>(1, filenameAttribute);
 	if (dimensions.width() > 0 && dimensions.height() > 0) {
-		const auto duration = document->duration();
+		const auto duration = document->getDuration();
 		if (duration >= 0) {
 			auto flags = MTPDdocumentAttributeVideo::Flags(0);
 			if (document->isVideoMessage()) {
@@ -253,7 +255,7 @@ void ApiWrap::refreshProxyPromotion() {
 void ApiWrap::getProxyPromotionDelayed(TimeId now, TimeId next) {
 	_proxyPromotionTimer.callOnce(std::min(
 		std::max(next - now, kProxyPromotionMinDelay),
-		kProxyPromotionInterval) * TimeMs(1000));
+		kProxyPromotionInterval) * crl::time(1000));
 };
 
 void ApiWrap::proxyPromotionDone(const MTPhelp_ProxyData &proxy) {
@@ -296,7 +298,7 @@ void ApiWrap::requestTermsUpdate() {
 	if (_termsUpdateRequestId) {
 		return;
 	}
-	const auto now = getms(true);
+	const auto now = crl::now();
 	if (_termsUpdateSendAt && now < _termsUpdateSendAt) {
 		App::CallDelayed(_termsUpdateSendAt - now, _session, [=] {
 			requestTermsUpdate();
@@ -304,8 +306,8 @@ void ApiWrap::requestTermsUpdate() {
 		return;
 	}
 
-	constexpr auto kTermsUpdateTimeoutMin = 10 * TimeMs(1000);
-	constexpr auto kTermsUpdateTimeoutMax = 86400 * TimeMs(1000);
+	constexpr auto kTermsUpdateTimeoutMin = 10 * crl::time(1000);
+	constexpr auto kTermsUpdateTimeoutMax = 86400 * crl::time(1000);
 
 	_termsUpdateRequestId = request(MTPhelp_GetTermsOfServiceUpdate(
 	)).done([=](const MTPhelp_TermsOfServiceUpdate &result) {
@@ -313,8 +315,8 @@ void ApiWrap::requestTermsUpdate() {
 
 		const auto requestNext = [&](auto &&data) {
 			const auto timeout = (data.vexpires.v - unixtime());
-			_termsUpdateSendAt = getms(true) + snap(
-				timeout * TimeMs(1000),
+			_termsUpdateSendAt = crl::now() + snap(
+				timeout * crl::time(1000),
 				kTermsUpdateTimeoutMin,
 				kTermsUpdateTimeoutMax);
 			requestTermsUpdate();
@@ -336,7 +338,7 @@ void ApiWrap::requestTermsUpdate() {
 		}
 	}).fail([=](const RPCError &error) {
 		_termsUpdateRequestId = 0;
-		_termsUpdateSendAt = getms(true) + kTermsUpdateTimeoutMin;
+		_termsUpdateSendAt = crl::now() + kTermsUpdateTimeoutMin;
 		requestTermsUpdate();
 	}).send();
 }
@@ -1091,7 +1093,7 @@ void ApiWrap::gotUserFull(
 	const auto &d = result.c_userFull();
 
 	if (user == _session->user() && !_session->validateSelf(d.vuser)) {
-		constexpr auto kRequestUserAgainTimeout = TimeMs(10000);
+		constexpr auto kRequestUserAgainTimeout = crl::time(10000);
 		App::CallDelayed(kRequestUserAgainTimeout, _session, [=] {
 			requestFullPeer(user);
 		});
@@ -2063,7 +2065,7 @@ void ApiWrap::unblockUser(not_null<UserData*> user) {
 		)).done([=](const MTPBool &result) {
 			_blockRequests.erase(user);
 			user->setBlockStatus(UserData::BlockStatus::NotBlocked);
-			if (user->botInfo) {
+			if (user->isBot() && !user->isSupport()) {
 				sendBotStart(user);
 			}
 		}).fail([=](const RPCError &error) {
@@ -2624,6 +2626,37 @@ void ApiWrap::resolveWebPages() {
 	}
 }
 
+void ApiWrap::requestAttachedStickerSets(not_null<PhotoData*> photo) {
+	request(_attachedStickerSetsRequestId).cancel();
+	_attachedStickerSetsRequestId = request(MTPmessages_GetAttachedStickers(
+		MTP_inputStickeredMediaPhoto(photo->mtpInput())
+	)).done([=](const MTPVector<MTPStickerSetCovered> &result) {
+		if (result.v.isEmpty()) {
+			Ui::show(Box<InformBox>(lang(lng_stickers_not_found)));
+			return;
+		} else if (result.v.size() > 1) {
+			Ui::show(Box<StickersBox>(result));
+			return;
+		}
+		// Single attached sticker pack.
+		const auto setData = result.v.front().match([&](const auto &data) {
+			return data.vset.match([&](const MTPDstickerSet &data) {
+				return &data;
+			});
+		});
+
+		const auto setId = (setData->vid.v && setData->vaccess_hash.v)
+			? MTP_inputStickerSetID(setData->vid, setData->vaccess_hash)
+			: MTP_inputStickerSetShortName(setData->vshort_name);
+		Ui::show(
+			Box<StickerSetBox>(setId),
+			LayerOption::KeepOther);
+
+	}).fail([=](const RPCError &error) {
+		Ui::show(Box<InformBox>(lang(lng_stickers_not_found)));
+	}).send();
+}
+
 void ApiWrap::requestParticipantsCountDelayed(
 		not_null<ChannelData*> channel) {
 	_participantsCountRequestTimer.call(
@@ -2963,7 +2996,7 @@ void ApiWrap::stickersSaveOrder() {
 }
 
 void ApiWrap::updateStickers() {
-	auto now = getms(true);
+	auto now = crl::now();
 	requestStickers(now);
 	requestRecentStickers(now);
 	requestFavedStickers(now);
@@ -2991,7 +3024,7 @@ std::vector<not_null<DocumentData*>> *ApiWrap::stickersByEmoji(
 			return true;
 		}
 		const auto received = it->second.received;
-		const auto now = getms(true);
+		const auto now = crl::now();
 		return (received > 0)
 			&& (received + kStickersByEmojiInvalidateTimeout) <= now;
 	}();
@@ -3019,7 +3052,7 @@ std::vector<not_null<DocumentData*>> *ApiWrap::stickersByEmoji(
 				}
 			}
 			entry.hash = data.vhash.v;
-			entry.received = getms(true);
+			entry.received = crl::now();
 			_session->data().notifyStickersUpdated();
 		}).send();
 	}
@@ -3111,7 +3144,7 @@ void ApiWrap::requestStickers(TimeId now) {
 		return;
 	}
 	auto onDone = [this](const MTPmessages_AllStickers &result) {
-		_session->data().setLastStickersUpdate(getms(true));
+		_session->data().setLastStickersUpdate(crl::now());
 		_stickersUpdateRequest = 0;
 
 		switch (result.type()) {
@@ -3146,7 +3179,7 @@ void ApiWrap::requestRecentStickersWithHash(int32 hash) {
 		MTP_flags(0),
 		MTP_int(hash)
 	)).done([=](const MTPmessages_RecentStickers &result) {
-		_session->data().setLastRecentStickersUpdate(getms(true));
+		_session->data().setLastRecentStickersUpdate(crl::now());
 		_recentStickersUpdateRequest = 0;
 
 		switch (result.type()) {
@@ -3164,7 +3197,7 @@ void ApiWrap::requestRecentStickersWithHash(int32 hash) {
 		default: Unexpected("Type in ApiWrap::recentStickersDone()");
 		}
 	}).fail([=](const RPCError &error) {
-		_session->data().setLastRecentStickersUpdate(getms(true));
+		_session->data().setLastRecentStickersUpdate(crl::now());
 		_recentStickersUpdateRequest = 0;
 
 		LOG(("App Fail: Failed to get recent stickers!"));
@@ -3179,7 +3212,7 @@ void ApiWrap::requestFavedStickers(TimeId now) {
 	_favedStickersUpdateRequest = request(MTPmessages_GetFavedStickers(
 		MTP_int(Local::countFavedStickersHash())
 	)).done([=](const MTPmessages_FavedStickers &result) {
-		_session->data().setLastFavedStickersUpdate(getms(true));
+		_session->data().setLastFavedStickersUpdate(crl::now());
 		_favedStickersUpdateRequest = 0;
 
 		switch (result.type()) {
@@ -3196,7 +3229,7 @@ void ApiWrap::requestFavedStickers(TimeId now) {
 		default: Unexpected("Type in ApiWrap::favedStickersDone()");
 		}
 	}).fail([=](const RPCError &error) {
-		_session->data().setLastFavedStickersUpdate(getms(true));
+		_session->data().setLastFavedStickersUpdate(crl::now());
 		_favedStickersUpdateRequest = 0;
 
 		LOG(("App Fail: Failed to get faved stickers!"));
@@ -3211,7 +3244,7 @@ void ApiWrap::requestFeaturedStickers(TimeId now) {
 	_featuredStickersUpdateRequest = request(MTPmessages_GetFeaturedStickers(
 		MTP_int(Local::countFeaturedStickersHash())
 	)).done([=](const MTPmessages_FeaturedStickers &result) {
-		_session->data().setLastFeaturedStickersUpdate(getms(true));
+		_session->data().setLastFeaturedStickersUpdate(crl::now());
 		_featuredStickersUpdateRequest = 0;
 
 		switch (result.type()) {
@@ -3223,7 +3256,7 @@ void ApiWrap::requestFeaturedStickers(TimeId now) {
 		default: Unexpected("Type in ApiWrap::featuredStickersDone()");
 		}
 	}).fail([=](const RPCError &error) {
-		_session->data().setLastFeaturedStickersUpdate(getms(true));
+		_session->data().setLastFeaturedStickersUpdate(crl::now());
 		_featuredStickersUpdateRequest = 0;
 
 		LOG(("App Fail: Failed to get featured stickers!"));
@@ -3238,7 +3271,7 @@ void ApiWrap::requestSavedGifs(TimeId now) {
 	_savedGifsUpdateRequest = request(MTPmessages_GetSavedGifs(
 		MTP_int(Local::countSavedGifsHash())
 	)).done([=](const MTPmessages_SavedGifs &result) {
-		_session->data().setLastSavedGifsUpdate(getms(true));
+		_session->data().setLastSavedGifsUpdate(crl::now());
 		_savedGifsUpdateRequest = 0;
 
 		switch (result.type()) {
@@ -3250,7 +3283,7 @@ void ApiWrap::requestSavedGifs(TimeId now) {
 		default: Unexpected("Type in ApiWrap::savedGifsDone()");
 		}
 	}).fail([=](const RPCError &error) {
-		_session->data().setLastSavedGifsUpdate(getms(true));
+		_session->data().setLastSavedGifsUpdate(crl::now());
 		_savedGifsUpdateRequest = 0;
 
 		LOG(("App Fail: Failed to get saved gifs!"));
@@ -3722,7 +3755,7 @@ void ApiWrap::addChatParticipants(
 				applyUpdates(result);
 			}).fail([=](const RPCError &error) {
 				ShowAddParticipantsError(error.type(), peer, { 1, user });
-			}).afterDelay(TimeMs(5)).send();
+			}).afterDelay(crl::time(5)).send();
 		}
 	} else if (const auto channel = peer->asChannel()) {
 		const auto bot = ranges::find_if(users, [](not_null<UserData*> user) {
@@ -3743,7 +3776,7 @@ void ApiWrap::addChatParticipants(
 				requestParticipantsCountDelayed(channel);
 			}).fail([=](const RPCError &error) {
 				ShowAddParticipantsError(error.type(), peer, users);
-			}).afterDelay(TimeMs(5)).send();
+			}).afterDelay(crl::time(5)).send();
 		};
 		for (const auto user : users) {
 			list.push_back(user->inputUser);
@@ -4242,7 +4275,7 @@ void ApiWrap::forwardMessages(
 					? UserId(0)
 					: peerToUser(self->id);
 				const auto messagePostAuthor = channelPost
-					? (self->firstName + ' ' + self->lastName)
+					? App::peerName(self)
 					: QString();
 				history->addNewForwarded(
 					newId.msg,
@@ -4323,7 +4356,7 @@ void ApiWrap::sendSharedContact(
 	}
 	const auto messageFromId = channelPost ? 0 : _session->userId();
 	const auto messagePostAuthor = channelPost
-		? (_session->user()->firstName + ' ' + _session->user()->lastName)
+		? App::peerName(_session->user())
 		: QString();
 	const auto vcard = QString();
 	const auto views = 1;
@@ -4628,7 +4661,11 @@ void ApiWrap::sendMessage(MessageToSend &&message) {
 			applyUpdates(result, randomId);
 			history->clearSentDraftText(QString());
 		}).fail([=](const RPCError &error) {
-			sendMessageFail(error);
+			if (error.type() == qstr("MESSAGE_EMPTY")) {
+				lastMessage->destroy();
+			} else {
+				sendMessageFail(error);
+			}
 			history->clearSentDraftText(QString());
 		}).afterRequest(history->sendRequestId
 		).send();
@@ -5437,6 +5474,11 @@ void ApiWrap::createPoll(
 	if (options.replyTo) {
 		sendFlags |= MTPmessages_SendMedia::Flag::f_reply_to_msg_id;
 	}
+	if (options.clearDraft) {
+		sendFlags |= MTPmessages_SendMedia::Flag::f_clear_draft;
+		history->clearLocalDraft();
+		history->clearCloudDraft();
+	}
 	const auto channelPost = peer->isChannel() && !peer->isMegagroup();
 	const auto silentPost = channelPost
 		&& _session->data().notifySilentPosts(peer);
@@ -5607,13 +5649,13 @@ void ApiWrap::readFeed(
 		if (_feedReadsDelayed.empty()) {
 			_feedReadTimer.callOnce(kFeedReadTimeout);
 		}
-		_feedReadsDelayed.emplace(feed, getms(true) + kFeedReadTimeout);
+		_feedReadsDelayed.emplace(feed, crl::now() + kFeedReadTimeout);
 	}
 }
 
 void ApiWrap::readFeeds() {
 	auto delay = kFeedReadTimeout;
-	const auto now = getms(true);
+	const auto now = crl::now();
 	//for (auto i = begin(_feedReadsDelayed); i != end(_feedReadsDelayed);) { // #feed
 	//	const auto feed = i->first;
 	//	const auto time = i->second;

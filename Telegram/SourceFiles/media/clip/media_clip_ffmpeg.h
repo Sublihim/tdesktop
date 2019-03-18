@@ -15,6 +15,7 @@ extern "C" {
 
 #include "media/clip/media_clip_implementation.h"
 #include "media/audio/media_child_ffmpeg_loader.h"
+#include "media/streaming/media_streaming_utility.h"
 
 namespace Media {
 namespace Clip {
@@ -24,20 +25,20 @@ class FFMpegReaderImplementation : public ReaderImplementation {
 public:
 	FFMpegReaderImplementation(FileLocation *location, QByteArray *data, const AudioMsgId &audio);
 
-	ReadResult readFramesTill(TimeMs frameMs, TimeMs systemMs) override;
+	ReadResult readFramesTill(crl::time frameMs, crl::time systemMs) override;
 
-	TimeMs frameRealTime() const override;
-	TimeMs framePresentationTime() const override;
+	crl::time frameRealTime() const override;
+	crl::time framePresentationTime() const override;
 
 	bool renderFrame(QImage &to, bool &hasAlpha, const QSize &size) override;
 
-	TimeMs durationMs() const override;
+	crl::time durationMs() const override;
 	bool hasAudio() const override {
 		return (_audioStreamId >= 0);
 	}
 
-	bool start(Mode mode, TimeMs &positionMs) override;
-	bool inspectAt(TimeMs &positionMs);
+	bool start(Mode mode, crl::time &positionMs) override;
+	bool inspectAt(crl::time &positionMs);
 
 	QString logData() const;
 
@@ -54,9 +55,9 @@ private:
 		EndOfFile,
 		Error,
 	};
-	PacketResult readPacket(AVPacket *packet);
-	void processPacket(AVPacket *packet);
-	TimeMs countPacketMs(AVPacket *packet) const;
+	PacketResult readPacket(Streaming::Packet &packet);
+	void processPacket(Streaming::Packet &&packet);
+	crl::time countPacketMs(const Streaming::Packet &packet) const;
 	PacketResult readAndProcessPacket();
 
 	enum class Rotation {
@@ -70,10 +71,6 @@ private:
 		return (_rotation == Rotation::Degrees90) || (_rotation == Rotation::Degrees270);
 	}
 
-	void startPacket();
-	void finishPacket();
-	void clearPacketQueue();
-
 	static int _read(void *opaque, uint8_t *buf, int buf_size);
 	static int64_t _seek(void *opaque, int64_t offset, int whence);
 
@@ -84,10 +81,9 @@ private:
 	uchar *_ioBuffer = nullptr;
 	AVIOContext *_ioContext = nullptr;
 	AVFormatContext *_fmtContext = nullptr;
-	AVCodec *_codec = nullptr;
 	AVCodecContext *_codecContext = nullptr;
 	int _streamId = 0;
-	AVFrame *_frame = nullptr;
+	Streaming::FramePointer _frame;
 	bool _opened = false;
 	bool _hadFrame = false;
 	bool _frameRead = false;
@@ -96,26 +92,22 @@ private:
 	bool _hasAudioStream = false;
 	int _audioStreamId = -1;
 	AudioMsgId _audioMsgId;
-	TimeMs _lastReadVideoMs = 0;
-	TimeMs _lastReadAudioMs = 0;
+	crl::time _lastReadVideoMs = 0;
+	crl::time _lastReadAudioMs = 0;
 
-	QQueue<FFMpeg::AVPacketDataWrap> _packetQueue;
-	AVPacket _packetNull; // for final decoding
-	int _packetStartedSize = 0;
-	uint8_t *_packetStartedData = nullptr;
-	bool _packetStarted = false;
+	std::deque<Streaming::Packet> _packetQueue;
 
 	int _width = 0;
 	int _height = 0;
 	SwsContext *_swsContext = nullptr;
 	QSize _swsSize;
 
-	TimeMs _frameMs = 0;
+	crl::time _frameMs = 0;
 	int _nextFrameDelay = 0;
 	int _currentFrameDelay = 0;
 
-	TimeMs _frameTime = 0;
-	TimeMs _frameTimeCorrection = 0;
+	crl::time _frameTime = 0;
+	crl::time _frameTimeCorrection = 0;
 
 };
 

@@ -21,12 +21,12 @@ namespace {
 
 struct DnsEntry {
 	QString data;
-	int64 TTL = 0;
+	crl::time TTL = 0;
 };
 
-constexpr auto kSendNextTimeout = TimeMs(1000);
-constexpr auto kMinTimeToLive = 10 * TimeMs(1000);
-constexpr auto kMaxTimeToLive = 300 * TimeMs(1000);
+constexpr auto kSendNextTimeout = crl::time(1000);
+constexpr auto kMinTimeToLive = 10 * crl::time(1000);
+constexpr auto kMaxTimeToLive = 300 * crl::time(1000);
 
 constexpr auto kPublicKey = str_const("\
 -----BEGIN RSA PUBLIC KEY-----\n\
@@ -155,8 +155,8 @@ std::vector<DnsEntry> ParseDnsResponse(
 
 		const auto ttlIt = object.find(qsl("TTL"));
 		const auto ttl = (ttlIt != object.constEnd())
-			? int64(std::round((*ttlIt).toDouble()))
-			: int64(0);
+			? crl::time(std::round((*ttlIt).toDouble()))
+			: crl::time(0);
 		result.push_back({ (*dataIt).toString(), ttl });
 	}
 	return result;
@@ -428,7 +428,7 @@ void SpecialConfigRequest::handleResponse(const QByteArray &bytes) {
 DomainResolver::DomainResolver(Fn<void(
 	const QString &host,
 	const QStringList &ips,
-	TimeMs expireAt)> callback)
+	crl::time expireAt)> callback)
 : _callback(std::move(callback)) {
 	_manager.setProxy(QNetworkProxy::NoProxy);
 }
@@ -445,7 +445,7 @@ void DomainResolver::resolve(const AttemptKey &key) {
 		return;
 	}
 	const auto i = _cache.find(key);
-	_lastTimestamp = getms(true);
+	_lastTimestamp = crl::now();
 	if (i != end(_cache) && i->second.expireAt > _lastTimestamp) {
 		checkExpireAndPushResult(key.domain);
 		return;
@@ -530,10 +530,10 @@ void DomainResolver::requestFinished(
 	for (const auto &item : response) {
 		entry.ips.push_back(item.data);
 		accumulate_min(ttl, std::max(
-			item.TTL * TimeMs(1000),
+			item.TTL * crl::time(1000),
 			kMinTimeToLive));
 	}
-	_lastTimestamp = getms(true);
+	_lastTimestamp = crl::now();
 	entry.expireAt = _lastTimestamp + ttl;
 	_cache[key] = std::move(entry);
 

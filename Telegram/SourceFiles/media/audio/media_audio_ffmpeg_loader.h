@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "media/audio/media_audio.h"
 #include "media/audio/media_audio_loader.h"
+#include "media/streaming/media_streaming_utility.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -19,6 +20,8 @@ extern "C" {
 
 #include <AL/al.h>
 
+namespace Media {
+
 class AbstractFFMpegLoader : public AudioPlayerLoader {
 public:
 	AbstractFFMpegLoader(
@@ -28,7 +31,7 @@ public:
 	: AudioPlayerLoader(file, data, std::move(buffer)) {
 	}
 
-	bool open(TimeMs positionMs) override;
+	bool open(crl::time positionMs) override;
 
 	int64 samplesCount() override {
 		return _samplesCount;
@@ -91,11 +94,18 @@ public:
 
 protected:
 	bool initUsingContext(
-		not_null<AVCodecContext*> context,
+		not_null<AVCodecContext *> context,
 		int64 initialCount,
 		int initialFrequency);
 	ReadResult readFromReadyContext(
-		not_null<AVCodecContext*> context,
+		not_null<AVCodecContext *> context,
+		QByteArray &result,
+		int64 &samplesAdded);
+
+	// Streaming player provides the first frame to the ChildFFMpegLoader
+	// so we replace our allocated frame with the one provided.
+	ReadResult replaceFrameAndRead(
+		Streaming::FramePointer frame,
 		QByteArray &result,
 		int64 &samplesAdded);
 
@@ -116,7 +126,7 @@ private:
 		uint8_t **data,
 		int count) const;
 
-	AVFrame *_frame = nullptr;
+	Streaming::FramePointer _frame;
 	int _outputFormat = AL_FORMAT_STEREO16;
 	int _outputChannels = 2;
 	int _outputSampleSize = 2 * sizeof(uint16);
@@ -143,7 +153,7 @@ public:
 		const QByteArray &data,
 		bytes::vector &&buffer);
 
-	bool open(TimeMs positionMs) override;
+	bool open(crl::time positionMs) override;
 
 	ReadResult readMore(QByteArray &result, int64 &samplesAdded) override;
 
@@ -151,9 +161,11 @@ public:
 
 private:
 	bool openCodecContext();
-	bool seekTo(TimeMs positionMs);
+	bool seekTo(crl::time positionMs);
 
 	AVCodecContext *_codecContext = nullptr;
 	AVPacket _packet;
 
 };
+
+} // namespace Media

@@ -172,6 +172,7 @@ public:
 	void clearWebPageRequest(WebPageData *page);
 	void clearWebPageRequests();
 
+	void requestAttachedStickerSets(not_null<PhotoData*> photo);
 	void scheduleStickerSetRequest(uint64 setId, uint64 access);
 	void requestStickerSets();
 	void saveStickerSets(
@@ -422,7 +423,7 @@ private:
 	struct StickersByEmoji {
 		std::vector<not_null<DocumentData*>> list;
 		int32 hash = 0;
-		TimeMs received = 0;
+		crl::time received = 0;
 	};
 
 	void updatesReceived(const MTPUpdates &updates);
@@ -728,7 +729,7 @@ private:
 
 	rpl::event_stream<uint64> _stickerSetInstalled;
 
-	base::flat_map<not_null<Data::Feed*>, TimeMs> _feedReadsDelayed;
+	base::flat_map<not_null<Data::Feed*>, crl::time> _feedReadsDelayed;
 	base::flat_map<not_null<Data::Feed*>, mtpRequestId> _feedReadRequests;
 	base::Timer _feedReadTimer;
 
@@ -746,7 +747,7 @@ private:
 
 	mtpRequestId _deepLinkInfoRequestId = 0;
 
-	TimeMs _termsUpdateSendAt = 0;
+	crl::time _termsUpdateSendAt = 0;
 	mtpRequestId _termsUpdateRequestId = 0;
 
 	mtpRequestId _checkInviteRequestId = 0;
@@ -793,5 +794,7 @@ private:
 	mtpRequestId _contactSignupSilentRequestId = 0;
 	std::optional<bool> _contactSignupSilent;
 	rpl::event_stream<bool> _contactSignupSilentChanges;
+
+	mtpRequestId _attachedStickerSetsRequestId = 0;
 
 };

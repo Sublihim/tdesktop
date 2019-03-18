@@ -101,7 +101,7 @@ constexpr auto kSkipRepaintWhileScrollMs = 100;
 constexpr auto kShowMembersDropdownTimeoutMs = 300;
 constexpr auto kDisplayEditTimeWarningMs = 300 * 1000;
 constexpr auto kFullDayInMs = 86400 * 1000;
-constexpr auto kCancelTypingActionTimeout = TimeMs(5000);
+constexpr auto kCancelTypingActionTimeout = crl::time(5000);
 constexpr auto kSaveDraftTimeout = 1000;
 constexpr auto kSaveDraftAnywayTimeout = 5000;
 constexpr auto kSaveCloudDraftIdleTimeout = 14000;
@@ -510,7 +510,9 @@ HistoryWidget::HistoryWidget(
 	}, _topBar->lifetime());
 
 	Auth().api().sendActions(
-	) | rpl::start_with_next([this](const ApiWrap::SendOptions &options) {
+	) | rpl::filter([=](const ApiWrap::SendOptions &options) {
+		return (options.history == _history);
+	}) | rpl::start_with_next([=](const ApiWrap::SendOptions &options) {
 		fastShowAtEnd(options.history);
 		const auto lastKeyboardUsed = lastForceReplyReplied(FullMsgId(
 			options.history->channelId(),
@@ -601,7 +603,7 @@ void HistoryWidget::supportShareContact(Support::Contact contact) {
 }
 
 void HistoryWidget::scrollToCurrentVoiceMessage(FullMsgId fromId, FullMsgId toId) {
-	if (getms() <= _lastUserScrolled + kScrollToVoiceAfterScrolledMs) {
+	if (crl::now() <= _lastUserScrolled + kScrollToVoiceAfterScrolledMs) {
 		return;
 	}
 	if (!_list) {
@@ -725,7 +727,7 @@ void HistoryWidget::enqueueMessageHighlight(
 }
 
 void HistoryWidget::highlightMessage(MsgId universalMessageId) {
-	_highlightStart = getms();
+	_highlightStart = crl::now();
 	_highlightedMessageId = universalMessageId;
 	_highlightTimer.callEach(AnimationTimerDelta);
 }
@@ -758,14 +760,14 @@ void HistoryWidget::updateHighlightedMessage() {
 		return stopMessageHighlight();
 	}
 	auto duration = st::activeFadeInDuration + st::activeFadeOutDuration;
-	if (getms() - _highlightStart > duration) {
+	if (crl::now() - _highlightStart > duration) {
 		return stopMessageHighlight();
 	}
 
 	Auth().data().requestViewRepaint(view);
 }
 
-TimeMs HistoryWidget::highlightStartTime(not_null<const HistoryItem*> item) const {
+crl::time HistoryWidget::highlightStartTime(not_null<const HistoryItem*> item) const {
 	auto isHighlighted = [this](not_null<const HistoryItem*> item) {
 		if (item->id == _highlightedMessageId) {
 			return (item->history() == _history);
@@ -1025,7 +1027,7 @@ void HistoryWidget::onDraftSaveDelayed() {
 void HistoryWidget::onDraftSave(bool delayed) {
 	if (!_peer) return;
 	if (delayed) {
-		auto ms = getms();
+		auto ms = crl::now();
 		if (!_saveDraftStart) {
 			_saveDraftStart = ms;
 			return _saveDraftTimer.start(kSaveDraftTimeout);
@@ -1239,6 +1241,7 @@ void HistoryWidget::onRecordUpdate(quint16 level, qint32 samples) {
 	if (samples < 0 || samples >= Media::Player::kDefaultFrequency * AudioVoiceMsgMaxLength) {
 		stopRecording(_peer && samples > 0 && _inField);
 	}
+	Core::App().updateNonIdle();
 	updateField();
 	if (_history) {
 		updateSendAction(_history, SendAction::Type::RecordVoice);
@@ -1319,7 +1322,7 @@ void HistoryWidget::setupShortcuts() {
 	}) | rpl::start_with_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
 		if (_history) {
-			request->check(Command::Search) && request->handle([=] {
+			request->check(Command::Search, 1) && request->handle([=] {
 				App::main()->searchInChat(_history);
 				return true;
 			});
@@ -1461,6 +1464,8 @@ void HistoryWidget::applyDraft(FieldHistoryAction fieldHistoryAction) {
 }
 
 void HistoryWidget::applyCloudDraft(History *history) {
+	Expects(!Auth().supportMode());
+
 	if (_history == history && !_editMsgId) {
 		applyDraft(Ui::InputField::HistoryAction::NewEntry);
 
@@ -1602,9 +1607,11 @@ void HistoryWidget::showHistory(
 	}
 
 	if (_peer) {
-		_unblock->setText(lang(_peer->isUser() && _peer->asUser()->botInfo
-			? lng_restart_button
-			: lng_unblock_button).toUpper());
+		_unblock->setText(lang((_peer->isUser()
+			&& _peer->asUser()->isBot()
+			&& !_peer->asUser()->isSupport())
+				? lng_restart_button
+				: lng_unblock_button).toUpper());
 		if (const auto channel = _peer->asChannel()) {
 			channel->updateFull();
 			_joinChannel->setText(lang(channel->isMegagroup()
@@ -1786,7 +1793,10 @@ bool HistoryWidget::contentOverlapped(const QRect &globalRect) {
 }
 
 void HistoryWidget::updateReportSpamStatus() {
-	if (!_peer || (_peer->isUser() && (_peer->id == Auth().userPeerId() || isNotificationsUser(_peer->id) || isServiceUser(_peer->id) || _peer->asUser()->botInfo))) {
+	if (!_peer
+		|| (_peer->id == Auth().userPeerId())
+		|| _peer->isServiceUser()
+		|| (_peer->isUser() && _peer->asUser()->isBot())) {
 		setReportSpamStatus(dbiprsHidden);
 		return;
 	} else if (!_firstLoadRequest && _history->isEmpty()) {
@@ -2562,7 +2572,7 @@ void HistoryWidget::onScroll() {
 	preloadHistoryIfNeeded();
 	visibleAreaUpdated();
 	if (!_synteticScrollEvent) {
-		_lastUserScrolled = getms();
+		_lastUserScrolled = crl::now();
 	}
 }
 
@@ -2614,7 +2624,7 @@ void HistoryWidget::preloadHistoryIfNeeded() {
 
 	auto scrollTop = _scroll->scrollTop();
 	if (scrollTop != _lastScrollTop) {
-		_lastScrolled = getms();
+		_lastScrolled = crl::now();
 		_lastScrollTop = scrollTop;
 	}
 }
@@ -2825,7 +2835,7 @@ void HistoryWidget::send(Qt::KeyboardModifiers modifiers) {
 
 	clearFieldText();
 	_saveDraftText = true;
-	_saveDraftStart = getms();
+	_saveDraftStart = crl::now();
 	onDraftSave();
 
 	hideSelectorControlsAnimated();
@@ -4297,7 +4307,7 @@ void HistoryWidget::sendFileConfirmed(
 				MTP_long(groupId)),
 			NewMessageUnread);
 	} else if (file->type == SendMediaType::Audio) {
-		if (!peer->isChannel()) {
+		if (!peer->isChannel() || peer->isMegagroup()) {
 			flags |= MTPDmessage::Flag::f_media_unread;
 		}
 		auto documentFlags = MTPDmessageMediaDocument::Flag::f_document | 0;
@@ -4523,7 +4533,7 @@ QPixmap HistoryWidget::grabForShowAnimation(
 }
 
 bool HistoryWidget::skipItemRepaint() {
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + kSkipRepaintWhileScrollMs <= ms) {
 		return false;
 	}
@@ -4535,7 +4545,7 @@ bool HistoryWidget::skipItemRepaint() {
 void HistoryWidget::onUpdateHistoryItems() {
 	if (!_list) return;
 
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + kSkipRepaintWhileScrollMs <= ms) {
 		_list->update();
 	} else {
@@ -5242,7 +5252,7 @@ void HistoryWidget::sendInlineResult(
 
 	clearFieldText();
 	_saveDraftText = true;
-	_saveDraftStart = getms();
+	_saveDraftStart = crl::now();
 	onDraftSave();
 
 	auto &bots = cRefRecentInlineBots();
@@ -5390,7 +5400,7 @@ bool HistoryWidget::sendExistingDocument(
 	if (_fieldAutocomplete->stickersShown()) {
 		clearFieldText();
 		//_saveDraftText = true;
-		//_saveDraftStart = getms();
+		//_saveDraftStart = crl::now();
 		//onDraftSave();
 		onCloudDraftSave(); // won't be needed if SendInlineBotResult will clear the cloud draft
 	}
@@ -5566,7 +5576,7 @@ void HistoryWidget::replyToMessage(not_null<HistoryItem*> item) {
 	}
 
 	_saveDraftText = true;
-	_saveDraftStart = getms();
+	_saveDraftStart = crl::now();
 	onDraftSave();
 
 	_field->setFocus();
@@ -5636,7 +5646,7 @@ void HistoryWidget::editMessage(not_null<HistoryItem*> item) {
 	updateField();
 
 	_saveDraftText = true;
-	_saveDraftStart = getms();
+	_saveDraftStart = crl::now();
 	onDraftSave();
 
 	_field->setFocus();
@@ -5748,7 +5758,7 @@ bool HistoryWidget::cancelReply(bool lastKeyboardUsed) {
 	}
 	if (wasReply) {
 		_saveDraftText = true;
-		_saveDraftStart = getms();
+		_saveDraftStart = crl::now();
 		onDraftSave();
 	}
 	if (!_editMsgId
@@ -5789,7 +5799,7 @@ void HistoryWidget::cancelEdit() {
 	}
 
 	_saveDraftText = true;
-	_saveDraftStart = getms();
+	_saveDraftStart = crl::now();
 	onDraftSave();
 
 	mouseMoveEvent(nullptr);
@@ -5821,7 +5831,7 @@ void HistoryWidget::onFieldBarCancel() {
 		previewCancel();
 
 		_saveDraftText = true;
-		_saveDraftStart = getms();
+		_saveDraftStart = crl::now();
 		onDraftSave();
 	} else if (_editMsgId) {
 		cancelEdit();
@@ -5938,7 +5948,7 @@ void HistoryWidget::updatePreview() {
 				Ui::DialogTextOptions());
 
 			const auto timeout = (_previewData->pendingTill - unixtime());
-			_previewTimer.callOnce(std::max(timeout, 0) * TimeMs(1000));
+			_previewTimer.callOnce(std::max(timeout, 0) * crl::time(1000));
 		} else {
 			QString title, desc;
 			if (_previewData->siteName.isEmpty()) {
@@ -6495,7 +6505,7 @@ void HistoryWidget::drawPinnedBar(Painter &p) {
 	}
 }
 
-bool HistoryWidget::paintShowAnimationFrame(TimeMs ms) {
+bool HistoryWidget::paintShowAnimationFrame(crl::time ms) {
 	auto progress = _a_show.current(ms, 1.);
 	if (!_a_show.animating()) {
 		return false;
@@ -6521,7 +6531,7 @@ bool HistoryWidget::paintShowAnimationFrame(TimeMs ms) {
 }
 
 void HistoryWidget::paintEvent(QPaintEvent *e) {
-	auto ms = getms();
+	auto ms = crl::now();
 	_historyDownShown.step(ms);
 	_unreadMentionsShown.step(ms);
 	if (paintShowAnimationFrame(ms)) {

@@ -10,8 +10,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localimageloader.h"
 #include "base/bytes.h"
 
-struct VideoSoundData;
-struct VideoSoundPart;
+namespace Media {
+struct ExternalSoundData;
+struct ExternalSoundPart;
+} // namespace Media
+
+namespace Media {
+namespace Streaming {
+struct TimePoint;
+} // namespace Streaming
+} // namespace Media
 
 namespace Media {
 namespace Audio {
@@ -32,6 +40,7 @@ bool AttachToDevice();
 void ScheduleDetachFromDeviceSafe();
 void ScheduleDetachIfNotUsedSafe();
 void StopDetachIfNotUsedSafe();
+bool SupportsSpeedControl();
 
 } // namespace Audio
 
@@ -83,6 +92,10 @@ inline bool IsPaused(State state) {
 		|| (state == State::PausedAtEnd);
 }
 
+inline bool IsPausedOrPausing(State state) {
+	return IsPaused(state) || (state == State::Pausing);
+}
+
 inline bool IsFading(State state) {
 	return (state == State::Starting)
 		|| (state == State::Stopping)
@@ -94,12 +107,19 @@ inline bool IsActive(State state) {
 	return !IsStopped(state) && !IsPaused(state);
 }
 
+inline bool ShowPauseIcon(State state) {
+	return !IsStoppedOrStopping(state)
+		&& !IsPausedOrPausing(state);
+}
+
 struct TrackState {
 	AudioMsgId id;
 	State state = State::Stopped;
 	int64 position = 0;
+	int64 receivedTill = 0;
 	int64 length = 0;
 	int frequency = kDefaultFrequency;
+	bool waitingForData = false;
 };
 
 class Mixer : public QObject, private base::Subscriber {
@@ -108,23 +128,29 @@ class Mixer : public QObject, private base::Subscriber {
 public:
 	explicit Mixer(not_null<Audio::Instance*> instance);
 
-	void play(const AudioMsgId &audio, TimeMs positionMs = 0);
-	void play(const AudioMsgId &audio, std::unique_ptr<VideoSoundData> videoData, TimeMs positionMs = 0);
+	void play(
+		const AudioMsgId &audio,
+		std::unique_ptr<ExternalSoundData> externalData,
+		crl::time positionMs);
 	void pause(const AudioMsgId &audio, bool fast = false);
 	void resume(const AudioMsgId &audio, bool fast = false);
-	void seek(AudioMsgId::Type type, TimeMs positionMs); // type == AudioMsgId::Type::Song
 	void stop(const AudioMsgId &audio);
 	void stop(const AudioMsgId &audio, State state);
 
-	// Video player audio stream interface.
-	void feedFromVideo(VideoSoundPart &&part);
-	int64 getVideoCorrectedTime(const AudioMsgId &id, TimeMs frameMs, TimeMs systemMs);
+	// External player audio stream interface.
+	void feedFromExternal(ExternalSoundPart &&part);
+	void forceToBufferExternal(const AudioMsgId &audioId);
+	void setSpeedFromExternal(const AudioMsgId &audioId, float64 speed);
+	Streaming::TimePoint getExternalSyncTimePoint(
+		const AudioMsgId &audio) const;
+	crl::time getExternalCorrectedTime(
+		const AudioMsgId &id,
+		crl::time frameMs,
+		crl::time systemMs);
 
 	void stopAndClear();
 
 	TrackState currentState(AudioMsgId::Type type);
-
-	void clearStoppedAtStart(const AudioMsgId &audio);
 
 	// Thread: Main. Must be locked: AudioMutex.
 	void detachTracks();
@@ -169,7 +195,7 @@ private:
 	void resetFadeStartPosition(AudioMsgId::Type type, int positionInBuffered = -1);
 	bool checkCurrentALError(AudioMsgId::Type type);
 
-	void videoSoundProgress(const AudioMsgId &audio);
+	void externalSoundProgress(const AudioMsgId &audio);
 
 	class Track {
 	public:
@@ -186,6 +212,11 @@ private:
 		void ensureStreamCreated(AudioMsgId::Type type);
 
 		int getNotQueuedBufferIndex();
+
+		void setExternalData(std::unique_ptr<ExternalSoundData> data);
+#ifndef TDESKTOP_DISABLE_OPENAL_EFFECTS
+		void changeSpeedEffect(float64 speed);
+#endif // TDESKTOP_DISABLE_OPENAL_EFFECTS
 
 		~Track();
 
@@ -209,15 +240,30 @@ private:
 			uint32 buffers[kBuffersCount] = { 0 };
 		};
 		Stream stream;
-		std::unique_ptr<VideoSoundData> videoData;
+		std::unique_ptr<ExternalSoundData> externalData;
 
-		TimeMs lastUpdateWhen = 0;
-		TimeMs lastUpdateCorrectedMs = 0;
+#ifndef TDESKTOP_DISABLE_OPENAL_EFFECTS
+		struct SpeedEffect {
+			uint32 effect = 0;
+			uint32 effectSlot = 0;
+			uint32 filter = 0;
+			int coarseTune = 0;
+			float64 speed = 1.;
+		};
+		std::unique_ptr<SpeedEffect> speedEffect;
+#endif // TDESKTOP_DISABLE_OPENAL_EFFECTS
+		crl::time lastUpdateWhen = 0;
+		crl::time lastUpdatePosition = 0;
 
 	private:
 		void createStream(AudioMsgId::Type type);
 		void destroyStream();
 		void resetStream();
+#ifndef TDESKTOP_DISABLE_OPENAL_EFFECTS
+		void resetSpeedEffect();
+		void applySourceSpeedEffect();
+		void removeSourceSpeedEffect();
+#endif // TDESKTOP_DISABLE_OPENAL_EFFECTS
 
 	};
 
@@ -299,9 +345,9 @@ private:
 	bool _suppressSongAnim = false;
 	anim::value _suppressVolumeAll;
 	anim::value _suppressVolumeSong;
-	TimeMs _suppressAllStart = 0;
-	TimeMs _suppressAllEnd = 0;
-	TimeMs _suppressSongStart = 0;
+	crl::time _suppressAllStart = 0;
+	crl::time _suppressAllEnd = 0;
+	crl::time _suppressSongStart = 0;
 
 };
 

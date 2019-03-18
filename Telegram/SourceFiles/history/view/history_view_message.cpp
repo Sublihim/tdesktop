@@ -374,7 +374,7 @@ void Message::draw(
 		Painter &p,
 		QRect clip,
 		TextSelection selection,
-		TimeMs ms) const {
+		crl::time ms) const {
 	auto g = countGeometry();
 	if (g.width() < 1) {
 		return;
@@ -1375,6 +1375,7 @@ bool Message::displayFastShare() const {
 	} else if (const auto user = peer->asUser()) {
 		if (const auto forwarded = item->Get<HistoryMessageForwarded>()) {
 			return !peer->isSelf()
+				&& !item->out()
 				&& forwarded->originalSender->isChannel()
 				&& !forwarded->originalSender->isMegagroup();
 		} else if (user->botInfo && !item->out()) {
