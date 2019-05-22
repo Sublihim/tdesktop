@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "ui/rp_widget.h"
+#include "ui/effects/animations.h"
 #include "media/player/media_player_float.h"
 #include "data/data_pts_waiter.h"
 
@@ -17,7 +18,6 @@ class AuthSession;
 struct HistoryMessageMarkupButton;
 class MainWindow;
 class ConfirmBox;
-class DialogsWidget;
 class HistoryWidget;
 class StackItem;
 struct FileLoadResult;
@@ -34,7 +34,7 @@ namespace Dialogs {
 struct RowDescriptor;
 class Row;
 class Key;
-class IndexedList;
+class Widget;
 } // namespace Dialogs
 
 namespace Media {
@@ -123,7 +123,7 @@ public:
 	void activate();
 	void updateReceived(const mtpPrime *from, const mtpPrime *end);
 
-	void createDialog(Dialogs::Key key);
+	void refreshDialog(Dialogs::Key key);
 	void removeDialog(Dialogs::Key key);
 	void repaintDialogRow(Dialogs::Mode list, not_null<Dialogs::Row*> row);
 	void repaintDialogRow(Dialogs::RowDescriptor row);
@@ -157,10 +157,11 @@ public:
 	QPixmap grabForShowAnimation(const Window::SectionSlideParams &params);
 	void checkMainSectionToLayer();
 
-	void onSendFileConfirm(const std::shared_ptr<FileLoadResult> &file);
+	void onSendFileConfirm(
+		const std::shared_ptr<FileLoadResult> &file,
+		const std::optional<FullMsgId> &oldId);
 	bool onSendSticker(DocumentData *sticker);
 
-	void destroyData();
 	void updateOnlineDisplayIn(int32 msecs);
 
 	bool isActive() const;
@@ -177,7 +178,6 @@ public:
 
 	void showForwardLayer(MessageIdsList &&items);
 	void showSendPathsLayer();
-	void deleteLayer(FullMsgId itemId);
 	void cancelUploadLayer(not_null<HistoryItem*> item);
 	void shareUrlLayer(const QString &url, const QString &text);
 	void inlineSwitchLayer(const QString &botAndQuery);
@@ -192,27 +192,10 @@ public:
 	bool sendPaths(PeerId peerId);
 	void onFilesOrForwardDrop(const PeerId &peer, const QMimeData *data);
 	bool selectingPeer() const;
-	void dialogsActivate();
 
 	void deletePhotoLayer(PhotoData *photo);
 
-	bool leaveChatFailed(PeerData *peer, const RPCError &e);
-	void deleteHistoryAfterLeave(PeerData *peer, const MTPUpdates &updates);
-	void deleteMessages(
-		not_null<PeerData*> peer,
-		const QVector<MTPint> &ids,
-		bool revoke);
-	void deletedContact(UserData *user, const MTPcontacts_Link &result);
-	void deleteConversation(
-		not_null<PeerData*> peer,
-		bool deleteHistory = true);
-	void deleteAndExit(ChatData *chat);
-
 	bool sendMessageFail(const RPCError &error);
-
-	Dialogs::IndexedList *contactsList();
-	Dialogs::IndexedList *dialogsList();
-	Dialogs::IndexedList *contactsNoDialogsList();
 
 	// While HistoryInner is not HistoryView::ListWidget.
 	crl::time highlightStartTime(not_null<const HistoryItem*> item) const;
@@ -308,7 +291,6 @@ public:
 	~MainWidget();
 
 signals:
-	void dialogRowReplaced(Dialogs::Row *oldRow, Dialogs::Row *newRow);
 	void dialogsUpdated();
 
 public slots:
@@ -379,10 +361,6 @@ private:
 	void destroyExportTopBar();
 	void exportTopBarHeightUpdated();
 
-	void messagesAffected(
-		not_null<PeerData*> peer,
-		const MTPmessages_AffectedMessages &result);
-
 	Window::SectionSlideParams prepareShowAnimation(
 		bool willHaveTopBarShadow);
 	void showNewSection(
@@ -416,8 +394,6 @@ private:
 	void feedMessageIds(const MTPVector<MTPUpdate> &updates);
 	// Doesn't call sendHistoryChangeNotifications itself.
 	void feedUpdate(const MTPUpdate &update);
-
-	void deleteHistoryPart(DeleteHistoryRequest request, const MTPmessages_AffectedHistory &result);
 
 	void usernameResolveDone(QPair<MsgId, QString> msgIdAndStartToken, const MTPcontacts_ResolvedPeer &result);
 	bool usernameResolveFail(QString name, const RPCError &error);
@@ -467,22 +443,24 @@ private:
 		const Data::WallPaper &background,
 		QImage &&image);
 
+	void handleHistoryBack();
+
 	not_null<Window::Controller*> _controller;
 	bool _started = false;
 
-	Animation _a_show;
+	Ui::Animations::Simple _a_show;
 	bool _showBack = false;
 	QPixmap _cacheUnder, _cacheOver;
 
 	int _dialogsWidth = 0;
 	int _thirdColumnWidth = 0;
-	Animation _a_dialogsWidth;
+	Ui::Animations::Simple _a_dialogsWidth;
 
 	object_ptr<Ui::PlainShadow> _sideShadow;
 	object_ptr<Ui::PlainShadow> _thirdShadow = { nullptr };
 	object_ptr<Ui::ResizeArea> _firstColumnResizeArea = { nullptr };
 	object_ptr<Ui::ResizeArea> _thirdColumnResizeArea = { nullptr };
-	object_ptr<DialogsWidget> _dialogs;
+	object_ptr<Dialogs::Widget> _dialogs;
 	object_ptr<HistoryWidget> _history;
 	object_ptr<Window::SectionWidget> _mainSection = { nullptr };
 	object_ptr<Window::SectionWidget> _thirdSection = { nullptr };

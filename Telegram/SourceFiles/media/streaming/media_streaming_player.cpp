@@ -750,11 +750,16 @@ bool Player::active() const {
 }
 
 bool Player::ready() const {
-	return (_stage != Stage::Uninitialized) && (_stage != Stage::Initializing);
+	return (_stage != Stage::Uninitialized)
+		&& (_stage != Stage::Initializing);
 }
 
 rpl::producer<Update, Error> Player::updates() const {
 	return _updates.events();
+}
+
+QSize Player::videoSize() const {
+	return _information.video.size;
 }
 
 QImage Player::frame(const FrameRequest &request) const {
@@ -775,6 +780,8 @@ Media::Player::TrackState Player::prepareLegacyState() const {
 		? State::StoppedAtError
 		: finished()
 		? State::StoppedAtEnd
+		: (_stage == Stage::Uninitialized)
+		? State::Stopped
 		: paused()
 		? State::Paused
 		: State::Playing;
@@ -805,10 +812,15 @@ Media::Player::TrackState Player::prepareLegacyState() const {
 }
 
 crl::time Player::getCurrentReceivedTill(crl::time duration) const {
+	const auto forTrack = [&](const TrackState &state) {
+		return (state.duration > 0 && state.receivedTill == state.duration)
+			? std::max(state.receivedTill, duration)
+			: state.receivedTill;
+	};
 	const auto previous = std::max(_previousReceivedTill, crl::time(0));
 	const auto result = std::min(
-		std::max(_information.audio.state.receivedTill, previous),
-		std::max(_information.video.state.receivedTill, previous));
+		std::max(forTrack(_information.audio.state), previous),
+		std::max(forTrack(_information.video.state), previous));
 	return (result >= 0 && duration > 1 && _options.loop)
 		? (result % duration)
 		: result;

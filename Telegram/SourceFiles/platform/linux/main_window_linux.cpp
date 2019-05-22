@@ -268,9 +268,6 @@ void MainWindow::psSetupTrayIcon() {
 			}
 			trayIcon->setIcon(icon);
 
-			trayIcon->setToolTip(str_const_toString(AppName));
-			connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)), this, SLOT(toggleTray(QSystemTrayIcon::ActivationReason)), Qt::UniqueConnection);
-
 			// This is very important for native notifications via libnotify!
 			// Some notification servers compose several notifications with a "Reply"
 			// action into one and after that a click on "Reply" button does not call
@@ -278,7 +275,7 @@ void MainWindow::psSetupTrayIcon() {
 			// just ignores ibus messages, but Qt tray icon at least emits this signal.
 			connect(trayIcon, SIGNAL(messageClicked()), this, SLOT(showFromTray()));
 
-			App::wnd()->updateTrayMenu();
+			attachToTrayIcon(trayIcon);
 		}
 		updateIconCounters();
 
@@ -556,8 +553,8 @@ void MainWindow::psFirstShow() {
 				LOG(("Found Unity Launcher entry telegramdesktop.desktop!"));
 				useUnityCount=true;
 			} else if(!QStandardPaths::locate(QStandardPaths::ApplicationsLocation, "Telegram.desktop").isEmpty()) {
-				_desktopFile = "telegramdesktop.desktop";
-				LOG(("Found Unity Launcher entry telegramdesktop.desktop!"));
+				_desktopFile = "Telegram.desktop";
+				LOG(("Found Unity Launcher entry Telegram.desktop!"));
 				useUnityCount=true;
 			} else {
 				LOG(("Could not get Unity Launcher entry!"));

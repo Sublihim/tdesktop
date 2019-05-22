@@ -68,6 +68,14 @@ historyToDownBadgeSize: 22px;
 historyToDownShownAfter: 480px;
 historyToDownDuration: 150;
 
+dialogsToUpAbove: icon {{ "history_down_arrow-flip_vertical", historyToDownFg, point(17px, 20px) }};
+dialogsToUpAboveOver: icon {{ "history_down_arrow-flip_vertical", historyToDownFgOver, point(17px, 20px) }};
+
+dialogsToUp: TwoIconButton(historyToDown) {
+	iconAbove: dialogsToUpAbove;
+	iconAboveOver: dialogsToUpAboveOver;
+}
+
 historyUnreadMentions: TwoIconButton(historyToDown) {
 	iconAbove: icon {{ "history_unread_mention", historyToDownFg, point(16px, 16px) }};
 	iconAboveOver: icon {{ "history_unread_mention", historyToDownFgOver, point(16px, 16px) }};
@@ -554,12 +562,12 @@ historyGroupAboutHeaderSkip: 10px;
 historyGroupAboutTextSkip: 10px;
 historyGroupAboutSkip: 8px;
 
-historyVideoDownloadSize: 36px;
+historyVideoDownloadSize: msgFileSize;
 historyVideoCancel: icon {{ "playlist_cancel", historyFileThumbIconFg }};
 historyVideoCancelSelected: icon {{ "playlist_cancel", historyFileThumbIconFgSelected }};
 historyVideoDownload: icon {{ "playlist_download", historyFileThumbIconFg }};
 historyVideoDownloadSelected: icon {{ "playlist_download", historyFileThumbIconFgSelected }};
-historyVideoRadialLine: 2px;
+historyVideoRadialLine: msgFileRadialLine;
 
 historyAudioDownloadSize: 20px;
 historyAudioRadialLine: 2px;

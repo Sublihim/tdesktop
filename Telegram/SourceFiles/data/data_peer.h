@@ -25,12 +25,12 @@ class ChannelData;
 
 namespace Data {
 
-class Feed;
 class Session;
 
 int PeerColorIndex(PeerId peerId);
 int PeerColorIndex(int32 bareId);
 style::color PeerUserpicColor(PeerId peerId);
+PeerId FakePeerIdForJustName(const QString &name);
 
 } // namespace Data
 
@@ -159,6 +159,7 @@ public:
 	[[nodiscard]] bool canWrite() const;
 	[[nodiscard]] Data::RestrictionCheckResult amRestricted(
 		ChatRestriction right) const;
+	[[nodiscard]] bool canRevokeFullHistory() const;
 
 	[[nodiscard]] UserData *asUser();
 	[[nodiscard]] const UserData *asUser() const;
@@ -177,7 +178,6 @@ public:
 	[[nodiscard]] ChannelData *migrateTo() const;
 	[[nodiscard]] not_null<PeerData*> migrateToOrMe();
 	[[nodiscard]] not_null<const PeerData*> migrateToOrMe() const;
-	[[nodiscard]] Data::Feed *feed() const;
 
 	void updateFull();
 	void updateFullForced();
@@ -232,7 +232,7 @@ public:
 	void loadUserpic(bool loadFirst = false, bool prior = true);
 	[[nodiscard]] bool userpicLoaded() const;
 	[[nodiscard]] bool useEmptyUserpic() const;
-	[[nodiscard]] StorageKey userpicUniqueKey() const;
+	[[nodiscard]] InMemoryKey userpicUniqueKey() const;
 	void saveUserpic(const QString &path, int size) const;
 	void saveUserpicRounded(const QString &path, int size) const;
 	[[nodiscard]] QPixmap genUserpic(int size) const;
@@ -274,11 +274,15 @@ public:
 		setPinnedMessageId(0);
 	}
 
+	[[nodiscard]] bool canExportChatHistory() const;
+
 	// Returns true if about text was changed.
 	bool setAbout(const QString &newAbout);
 	const QString &about() const {
 		return _about;
 	}
+
+	void checkFolder(FolderId folderId);
 
 	enum LoadedStatus {
 		NotLoaded = 0x00,
@@ -299,7 +303,10 @@ protected:
 		const QString &newName,
 		const QString &newNameOrPhone,
 		const QString &newUsername);
-	void updateUserpic(PhotoId photoId, const MTPFileLocation &location);
+	void updateUserpic(
+		PhotoId photoId,
+		MTP::DcId dcId,
+		const MTPFileLocation &location);
 	void clearUserpic();
 
 private:
@@ -335,6 +342,8 @@ private:
 };
 
 namespace Data {
+
+std::vector<ChatRestrictions> ListOfRestrictions();
 
 std::optional<LangKey> RestrictionErrorKey(
 	not_null<PeerData*> peer,

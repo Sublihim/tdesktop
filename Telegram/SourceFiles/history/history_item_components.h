@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "history/history_item.h"
+#include "ui/empty_userpic.h"
+#include "ui/effects/animations.h"
 
 class HistoryDocument;
 struct WebPageData;
@@ -50,11 +52,30 @@ struct HistoryMessageEdited : public RuntimeComponent<HistoryMessageEdited, Hist
 	Text text;
 };
 
+struct HiddenSenderInfo {
+	explicit HiddenSenderInfo(const QString &name);
+
+	QString name;
+	QString firstName;
+	QString lastName;
+	PeerId colorPeerId = 0;
+	Ui::EmptyUserpic userpic;
+	Text nameText;
+
+	inline bool operator==(const HiddenSenderInfo &other) const {
+		return name == other.name;
+	}
+	inline bool operator!=(const HiddenSenderInfo &other) const {
+		return !(*this == other);
+	}
+};
+
 struct HistoryMessageForwarded : public RuntimeComponent<HistoryMessageForwarded, HistoryItem> {
 	void create(const HistoryMessageVia *via) const;
 
 	TimeId originalDate = 0;
 	PeerData *originalSender = nullptr;
+	std::unique_ptr<HiddenSenderInfo> hiddenSenderInfo;
 	QString originalAuthor;
 	MsgId originalId = 0;
 	mutable Text text = { 1 };
@@ -257,7 +278,7 @@ public:
 	private:
 		const style::BotKeyboardButton *_st;
 
-		void paintButton(Painter &p, int outerWidth, const ReplyKeyboard::Button &button, crl::time ms) const;
+		void paintButton(Painter &p, int outerWidth, const ReplyKeyboard::Button &button) const;
 		friend class ReplyKeyboard;
 
 	};
@@ -276,7 +297,7 @@ public:
 	int naturalWidth() const;
 	int naturalHeight() const;
 
-	void paint(Painter &p, int outerWidth, const QRect &clip, crl::time ms) const;
+	void paint(Painter &p, int outerWidth, const QRect &clip) const;
 	ClickHandlerPtr getLink(QPoint point) const;
 
 	void clickHandlerActiveChanged(const ClickHandlerPtr &p, bool active);
@@ -309,7 +330,7 @@ private:
 
 	ButtonCoords findButtonCoordsByClickHandler(const ClickHandlerPtr &p);
 
-	void step_selected(crl::time ms, bool timer);
+	bool selectedAnimationCallback(crl::time now);
 
 	const not_null<const HistoryItem*> _item;
 	int _width = 0;
@@ -317,7 +338,7 @@ private:
 	std::vector<std::vector<Button>> _rows;
 
 	base::flat_map<int, crl::time> _animations;
-	BasicAnimation _a_selected;
+	Ui::Animations::Basic _selectedAnimation;
 	std::unique_ptr<Style> _st;
 
 	ClickHandlerPtr _savedPressed;
@@ -363,9 +384,9 @@ struct HistoryDocumentNamed : public RuntimeComponent<HistoryDocumentNamed, Hist
 struct HistoryDocumentVoicePlayback {
 	HistoryDocumentVoicePlayback(const HistoryDocument *that);
 
-	int32 _position = 0;
-	anim::value a_progress;
-	BasicAnimation _a_progress;
+	int32 position = 0;
+	anim::value progress;
+	Ui::Animations::Basic progressAnimation;
 };
 
 class HistoryDocumentVoice : public RuntimeComponent<HistoryDocumentVoice, HistoryDocument> {

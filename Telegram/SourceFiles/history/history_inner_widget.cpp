@@ -24,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_context_menu.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/image/image.h"
+#include "ui/toast/toast.h"
 #include "ui/text_options.h"
 #include "window/window_controller.h"
 #include "window/window_peer_menu.h"
@@ -686,12 +687,23 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 				// paint the userpic if it intersects the painted rect
 				if (userpicTop + st::msgPhotoSize > clip.top()) {
 					const auto message = view->data()->toHistoryMessage();
-					message->displayFrom()->paintUserpicLeft(
-						p,
-						st::historyPhotoLeft,
-						userpicTop,
-						width(),
-						st::msgPhotoSize);
+					if (const auto from = message->displayFrom()) {
+						from->paintUserpicLeft(
+							p,
+							st::historyPhotoLeft,
+							userpicTop,
+							width(),
+							st::msgPhotoSize);
+					} else if (const auto info = message->hiddenForwardedInfo()) {
+						info->userpic.paint(
+							p,
+							st::historyPhotoLeft,
+							userpicTop,
+							width(),
+							st::msgPhotoSize);
+					} else {
+						Unexpected("Corrupt forwarded information in message.");
+					}
 				}
 				return true;
 			});
@@ -706,7 +718,7 @@ void HistoryInner::paintEvent(QPaintEvent *e) {
 			//int showFloatingBefore = height() - 2 * (_visibleAreaBottom - _visibleAreaTop) - dateHeight;
 
 
-			auto scrollDateOpacity = _scrollDateOpacity.current(ms, _scrollDateShown ? 1. : 0.);
+			auto scrollDateOpacity = _scrollDateOpacity.value(_scrollDateShown ? 1. : 0.);
 			enumerateDates([&](not_null<Element*> view, int itemtop, int dateTop) {
 				// stop the enumeration if the date is above the painted rect
 				if (dateTop + dateHeight <= clip.top()) {
@@ -1144,18 +1156,20 @@ std::unique_ptr<QMimeData> HistoryInner::prepareDrag() {
 		}
 	}
 
-	TextWithEntities sel;
-	QList<QUrl> urls;
-	if (uponSelected) {
-		sel = getSelectedText();
-	} else if (pressedHandler) {
-		sel = { pressedHandler->dragText(), EntitiesInText() };
-		//if (!sel.isEmpty() && sel.at(0) != '/' && sel.at(0) != '@' && sel.at(0) != '#') {
-		//	urls.push_back(QUrl::fromEncoded(sel.toUtf8())); // Google Chrome crashes in Mac OS X O_o
-		//}
-	}
-	if (auto mimeData = MimeDataFromTextWithEntities(sel)) {
-		updateDragSelection(0, 0, false);
+	auto urls = QList<QUrl>();
+	const auto selectedText = [&] {
+		if (uponSelected) {
+			return getSelectedText();
+		} else if (pressedHandler) {
+			//if (!sel.isEmpty() && sel.at(0) != '/' && sel.at(0) != '@' && sel.at(0) != '#') {
+			//	urls.push_back(QUrl::fromEncoded(sel.toUtf8())); // Google Chrome crashes in Mac OS X O_o
+			//}
+			return TextForMimeData::Simple(pressedHandler->dragText());
+		}
+		return TextForMimeData();
+	}();
+	if (auto mimeData = MimeDataFromText(selectedText)) {
+		updateDragSelection(nullptr, nullptr, false);
 		_widget->noSelectingScroll();
 
 		if (!urls.isEmpty()) mimeData->setUrls(urls);
@@ -1366,7 +1380,7 @@ void HistoryInner::mouseActionFinish(
 	if (!_selected.empty() && _selected.cbegin()->second != FullSelection) {
 		const auto [item, selection] = *_selected.cbegin();
 		if (const auto view = item->mainView()) {
-			SetClipboardWithEntities(
+			SetClipboardText(
 				view->selectedText(selection),
 				QClipboard::Selection);
 		}
@@ -1568,7 +1582,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		}
 		if (item && item->hasDirectLink() && isUponSelected != 2 && isUponSelected != -2) {
 			_menu->addAction(lang(item->history()->peer->isMegagroup() ? lng_context_copy_link : lng_context_copy_post_link), [=] {
-				_widget->copyPostLink(itemId);
+				HistoryView::CopyPostLink(itemId);
 			});
 		}
 		if (isUponSelected > 1) {
@@ -1606,7 +1620,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			}
 			if (IsServerMsgId(item->id) && !item->serviceMsg()) {
 				_menu->addAction(lang(lng_context_select_msg), [=] {
-					if (const auto item = App::histItemById(itemId)) {
+					if (const auto item = Auth().data().message(itemId)) {
 						if (const auto view = item->mainView()) {
 							changeSelection(&_selected, item, SelectAction::Select);
 							repaintItem(item);
@@ -1704,7 +1718,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				});
 		} else if (item && item->hasDirectLink() && isUponSelected != 2 && isUponSelected != -2) {
 			_menu->addAction(lang(item->history()->peer->isMegagroup() ? lng_context_copy_link : lng_context_copy_post_link), [=] {
-				_widget->copyPostLink(itemId);
+				HistoryView::CopyPostLink(itemId);
 			});
 		}
 		if (isUponSelected > 1) {
@@ -1741,7 +1755,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			}
 			if (item->id > 0 && !item->serviceMsg()) {
 				_menu->addAction(lang(lng_context_select_msg), [=] {
-					if (const auto item = App::histItemById(itemId)) {
+					if (const auto item = Auth().data().message(itemId)) {
 						if (const auto view = item->mainView()) {
 							changeSelectionAsGroup(&_selected, item, SelectAction::Select);
 							repaintItem(view);
@@ -1756,7 +1770,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				&& !App::mousedItem()->data()->serviceMsg()) {
 				const auto itemId = App::mousedItem()->data()->fullId();
 				_menu->addAction(lang(lng_context_select_msg), [=] {
-					if (const auto item = App::histItemById(itemId)) {
+					if (const auto item = Auth().data().message(itemId)) {
 						if (const auto view = item->mainView()) {
 							changeSelectionAsGroup(&_selected, item, SelectAction::Select);
 							repaintItem(item);
@@ -1768,7 +1782,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		}
 	}
 
-	if (_menu->actions().isEmpty()) {
+	if (_menu->actions().empty()) {
 		_menu = nullptr;
 	} else {
 		_menu->popup(e->globalPos());
@@ -1777,7 +1791,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 }
 
 void HistoryInner::copySelectedText() {
-	SetClipboardWithEntities(getSelectedText());
+	SetClipboardText(getSelectedText());
 }
 
 void HistoryInner::savePhotoToFile(not_null<PhotoData*> photo) {
@@ -1830,7 +1844,7 @@ void HistoryInner::saveDocumentToFile(
 }
 
 void HistoryInner::openContextGif(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		if (const auto media = item->media()) {
 			if (const auto document = media->document()) {
 				Core::App().showDocument(document, item);
@@ -1840,7 +1854,7 @@ void HistoryInner::openContextGif(FullMsgId itemId) {
 }
 
 void HistoryInner::saveContextGif(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		if (const auto media = item->media()) {
 			if (const auto document = media->document()) {
 				Auth().api().toggleSavedGif(document, item->fullId(), true);
@@ -1850,11 +1864,11 @@ void HistoryInner::saveContextGif(FullMsgId itemId) {
 }
 
 void HistoryInner::copyContextText(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		if (const auto group = Auth().data().groups().find(item)) {
-			SetClipboardWithEntities(HistoryGroupText(group));
+			SetClipboardText(HistoryGroupText(group));
 		} else {
-			SetClipboardWithEntities(HistoryItemText(item));
+			SetClipboardText(HistoryItemText(item));
 		}
 	}
 }
@@ -1863,7 +1877,7 @@ void HistoryInner::resizeEvent(QResizeEvent *e) {
 	mouseActionUpdate();
 }
 
-TextWithEntities HistoryInner::getSelectedText() const {
+TextForMimeData HistoryInner::getSelectedText() const {
 	auto selected = _selected;
 
 	if (_mouseAction == MouseAction::Selecting && _dragSelFrom && _dragSelTo) {
@@ -1871,32 +1885,32 @@ TextWithEntities HistoryInner::getSelectedText() const {
 	}
 
 	if (selected.empty()) {
-		return TextWithEntities();
+		return TextForMimeData();
 	}
 	if (selected.cbegin()->second != FullSelection) {
 		const auto [item, selection] = *selected.cbegin();
 		if (const auto view = item->mainView()) {
 			return view->selectedText(selection);
 		}
-		return TextWithEntities();
+		return TextForMimeData();
 	}
 
 	const auto timeFormat = qsl(", [dd.MM.yy hh:mm]\n");
 	auto groups = base::flat_set<not_null<const Data::Group*>>();
 	auto fullSize = 0;
-	auto texts = base::flat_map<Data::MessagePosition, TextWithEntities>();
+	auto texts = base::flat_map<Data::MessagePosition, TextForMimeData>();
 
 	const auto wrapItem = [&](
 			not_null<HistoryItem*> item,
-			TextWithEntities &&unwrapped) {
+			TextForMimeData &&unwrapped) {
 		auto time = ItemDateTime(item).toString(timeFormat);
-		auto part = TextWithEntities();
+		auto part = TextForMimeData();
 		auto size = item->author()->name.size()
 			+ time.size()
-			+ unwrapped.text.size();
-		part.text.reserve(size);
-		part.text.append(item->author()->name).append(time);
-		TextUtilities::Append(part, std::move(unwrapped));
+			+ unwrapped.expanded.size();
+		part.reserve(size);
+		part.append(item->author()->name).append(time);
+		part.append(std::move(unwrapped));
 		texts.emplace(item->position(), part);
 		fullSize += size;
 	};
@@ -1925,13 +1939,13 @@ TextWithEntities HistoryInner::getSelectedText() const {
 		}
 	}
 
-	auto result = TextWithEntities();
-	auto sep = qsl("\n\n");
-	result.text.reserve(fullSize + (texts.size() - 1) * sep.size());
+	auto result = TextForMimeData();
+	const auto sep = qstr("\n\n");
+	result.reserve(fullSize + (texts.size() - 1) * sep.size());
 	for (auto i = texts.begin(), e = texts.end(); i != e;) {
-		TextUtilities::Append(result, std::move(i->second));
+		result.append(std::move(i->second));
 		if (++i != e) {
-			result.text.append(sep);
+			result.append(sep);
 		}
 	}
 	return result;
@@ -1939,13 +1953,13 @@ TextWithEntities HistoryInner::getSelectedText() const {
 
 void HistoryInner::keyPressEvent(QKeyEvent *e) {
 	if (e->key() == Qt::Key_Escape) {
-		_widget->onListEscapePressed();
+		_widget->escape();
 	} else if (e == QKeySequence::Copy && !_selected.empty()) {
 		copySelectedText();
 #ifdef Q_OS_MAC
 	} else if (e->key() == Qt::Key_E
 		&& e->modifiers().testFlag(Qt::ControlModifier)) {
-		SetClipboardWithEntities(getSelectedText(), QClipboard::FindBuffer);
+		SetClipboardText(getSelectedText(), QClipboard::FindBuffer);
 #endif // Q_OS_MAC
 	} else if (e == QKeySequence::Delete) {
 		auto selectedState = getSelectionState();
@@ -2244,7 +2258,7 @@ bool HistoryInner::focusNextPrevChild(bool next) {
 
 void HistoryInner::adjustCurrent(int32 y) const {
 	int32 htop = historyTop(), hdrawtop = historyDrawTop(), mtop = migratedTop();
-	_curHistory = 0;
+	_curHistory = nullptr;
 	if (mtop >= 0) {
 		adjustCurrent(y - mtop, _migrated);
 	}
@@ -2445,7 +2459,7 @@ void HistoryInner::mouseActionUpdate() {
 			dragState = TextState(nullptr, _botAbout->info->text.getState(
 				point - _botAbout->rect.topLeft() - QPoint(st::msgPadding.left(), st::msgPadding.top() + st::botDescSkip + st::msgNameFont->height),
 				_botAbout->width));
-			_dragStateItem = App::histItemById(dragState.itemId);
+			_dragStateItem = Auth().data().message(dragState.itemId);
 			lnkhost = _botAbout.get();
 		}
 	} else if (item) {
@@ -2459,7 +2473,7 @@ void HistoryInner::mouseActionUpdate() {
 		}
 
 		auto dateHeight = st::msgServicePadding.bottom() + st::msgServiceFont->height + st::msgServicePadding.top();
-		auto scrollDateOpacity = _scrollDateOpacity.current(_scrollDateShown ? 1. : 0.);
+		auto scrollDateOpacity = _scrollDateOpacity.value(_scrollDateShown ? 1. : 0.);
 		enumerateDates([&](not_null<Element*> view, int itemtop, int dateTop) {
 			// stop enumeration if the date is above our point
 			if (dateTop + dateHeight <= point.y()) {
@@ -2503,7 +2517,7 @@ void HistoryInner::mouseActionUpdate() {
 						dragState = TextState(
 							nullptr,
 							_scrollDateLink);
-						_dragStateItem = App::histItemById(dragState.itemId);
+						_dragStateItem = Auth().data().message(dragState.itemId);
 						lnkhost = view;
 					}
 				}
@@ -2519,7 +2533,7 @@ void HistoryInner::mouseActionUpdate() {
 				selectingText = false;
 			}
 			dragState = view->textState(m, request);
-			_dragStateItem = App::histItemById(dragState.itemId);
+			_dragStateItem = Auth().data().message(dragState.itemId);
 			lnkhost = view;
 			if (!dragState.link && m.x() >= st::historyPhotoLeft && m.x() < st::historyPhotoLeft + st::msgPhotoSize) {
 				if (auto msg = item->toHistoryMessage()) {
@@ -2535,10 +2549,11 @@ void HistoryInner::mouseActionUpdate() {
 								const auto message = view->data()->toHistoryMessage();
 								Assert(message != nullptr);
 
-								dragState = TextState(
-									nullptr,
-									message->displayFrom()->openLink());
-								_dragStateItem = App::histItemById(dragState.itemId);
+								const auto from = message->displayFrom();
+								dragState = TextState(nullptr, from
+									? from->openLink()
+									: hiddenUserpicLink(message->fullId()));
+								_dragStateItem = Auth().data().message(dragState.itemId);
 								lnkhost = view;
 								return false;
 							}
@@ -2669,13 +2684,20 @@ void HistoryInner::mouseActionUpdate() {
 	if (_mouseAction == MouseAction::Selecting) {
 		_widget->checkSelectingScroll(mousePos);
 	} else {
-		updateDragSelection(0, 0, false);
+		updateDragSelection(nullptr, nullptr, false);
 		_widget->noSelectingScroll();
 	}
 
 	if (_mouseAction == MouseAction::None && (lnkChanged || cur != _cursor)) {
 		setCursor(_cursor = cur);
 	}
+}
+
+ClickHandlerPtr HistoryInner::hiddenUserpicLink(FullMsgId id) {
+	static const auto result = std::make_shared<LambdaClickHandler>([] {
+		Ui::Toast::Show(lang(lng_forwarded_hidden));
+	});
+	return result;
 }
 
 void HistoryInner::updateDragSelection(Element *dragSelFrom, Element *dragSelTo, bool dragSelecting) {
@@ -2917,13 +2939,13 @@ void HistoryInner::forwardItem(FullMsgId itemId) {
 }
 
 void HistoryInner::forwardAsGroup(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		Window::ShowForwardMessagesBox(Auth().data().itemOrItsGroup(item));
 	}
 }
 
 void HistoryInner::deleteItem(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		deleteItem(item);
 	}
 }
@@ -2945,7 +2967,7 @@ bool HistoryInner::hasPendingResizedItems() const {
 }
 
 void HistoryInner::deleteAsGroup(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		const auto group = Auth().data().groups().find(item);
 		if (!group) {
 			return deleteItem(item);
@@ -2960,7 +2982,7 @@ void HistoryInner::reportItem(FullMsgId itemId) {
 }
 
 void HistoryInner::reportAsGroup(FullMsgId itemId) {
-	if (const auto item = App::histItemById(itemId)) {
+	if (const auto item = Auth().data().message(itemId)) {
 		const auto group = Auth().data().groups().find(item);
 		if (!group) {
 			return reportItem(itemId);
@@ -3066,7 +3088,9 @@ QString HistoryInner::tooltipText() const {
 					if (media->hidesForwardedInfo()) {
 						dateText += "\n" + lng_forwarded(
 							lt_user,
-							forwarded->originalSender->shortName());
+							(forwarded->originalSender
+								? forwarded->originalSender->shortName()
+								: forwarded->hiddenSenderInfo->firstName));
 					}
 				}
 			}
@@ -3081,7 +3105,7 @@ QString HistoryInner::tooltipText() const {
 		&& _mouseAction == MouseAction::None) {
 		if (const auto view = App::hoveredItem()) {
 			if (const auto forwarded = view->data()->Get<HistoryMessageForwarded>()) {
-				return forwarded->text.originalText(AllTextSelection, ExpandLinksNone);
+				return forwarded->text.toString();
 			}
 		}
 	} else if (const auto lnk = ClickHandler::getActive()) {
@@ -3133,7 +3157,7 @@ not_null<HistoryView::ElementDelegate*> HistoryInner::ElementDelegate() {
 		void elementAnimationAutoplayAsync(
 				not_null<const HistoryView::Element*> view) override {
 			crl::on_main(&Auth(), [msgId = view->data()->fullId()] {
-				if (const auto item = App::histItemById(msgId)) {
+				if (const auto item = Auth().data().message(msgId)) {
 					if (const auto view = item->mainView()) {
 						if (const auto media = view->media()) {
 							media->autoplayAnimation();

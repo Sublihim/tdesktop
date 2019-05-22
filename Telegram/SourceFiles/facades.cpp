@@ -391,6 +391,7 @@ struct Data {
 	int32 StickersRecentLimit = 30;
 	int32 StickersFavedLimit = 5;
 	int32 PinnedDialogsCountMax = 5;
+	int32 PinnedDialogsInFolderMax = 100;
 	QString InternalLinksDomain = qsl("https://t.me/");
 	int32 ChannelsReadMediaPeriod = 86400 * 7;
 	int32 CallReceiveTimeoutMs = 20000;
@@ -418,8 +419,6 @@ struct Data {
 	base::Observable<void> FeaturedStickerSetsUnreadCountChanged;
 	crl::time LastFeaturedStickersUpdate = 0;
 	Stickers::Order ArchivedStickerSetsOrder;
-
-	CircleMasksMap CircleMasks;
 
 	bool AskDownloadPath = false;
 	QString DownloadPath;
@@ -527,6 +526,7 @@ DefineVar(Global, bool, RevokePrivateInbox);
 DefineVar(Global, int32, StickersRecentLimit);
 DefineVar(Global, int32, StickersFavedLimit);
 DefineVar(Global, int32, PinnedDialogsCountMax);
+DefineVar(Global, int32, PinnedDialogsInFolderMax);
 DefineVar(Global, QString, InternalLinksDomain);
 DefineVar(Global, int32, ChannelsReadMediaPeriod);
 DefineVar(Global, int32, CallReceiveTimeoutMs);
@@ -552,8 +552,6 @@ DefineVar(Global, int, FeaturedStickerSetsUnreadCount);
 DefineRefVar(Global, base::Observable<void>, FeaturedStickerSetsUnreadCountChanged);
 DefineVar(Global, crl::time, LastFeaturedStickersUpdate);
 DefineVar(Global, Stickers::Order, ArchivedStickerSetsOrder);
-
-DefineRefVar(Global, CircleMasksMap, CircleMasks);
 
 DefineVar(Global, bool, AskDownloadPath);
 DefineVar(Global, QString, DownloadPath);

@@ -376,9 +376,9 @@ QSize Service::performCountOptimalSize() {
 }
 
 bool Service::isHidden() const {
-	if (context() == Context::Feed) {
-		return true;
-	}
+	//if (context() == Context::Feed) { // #feed
+	//	return true;
+	//}
 	return Element::isHidden();
 }
 
@@ -530,8 +530,8 @@ TextState Service::textState(QPoint point, StateRequest request) const {
 void Service::updatePressed(QPoint point) {
 }
 
-TextWithEntities Service::selectedText(TextSelection selection) const {
-	return message()->_text.originalTextWithEntities(selection);
+TextForMimeData Service::selectedText(TextSelection selection) const {
+	return message()->_text.toTextForMimeData(selection);
 }
 
 TextSelection Service::adjustSelection(

@@ -64,7 +64,7 @@ void UnsafeShowInFolder(const QString &filepath) {
 		arguments << "--select" << absolutePath;
 	} else if (output == qstr("nautilus.desktop") || output == qstr("org.gnome.Nautilus.desktop") || output == qstr("nautilus-folder-handler.desktop")) {
 		command = qsl("nautilus");
-		arguments << "--no-desktop" << absolutePath;
+		arguments << absolutePath;
 	} else if (output == qstr("nemo.desktop")) {
 		command = qsl("nemo");
 		arguments << "--no-desktop" << absolutePath;
@@ -358,7 +358,7 @@ GtkFileDialog::GtkFileDialog(QWidget *parent, const QString &caption, const QStr
 	d.reset(new QGtkDialog(Libs::gtk_file_chooser_dialog_new("", nullptr,
 		GTK_FILE_CHOOSER_ACTION_OPEN,
 		GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
-		GTK_STOCK_OK, GTK_RESPONSE_OK, NULL)));
+		GTK_STOCK_OK, GTK_RESPONSE_OK, nullptr)));
 	connect(d.data(), SIGNAL(accept()), this, SLOT(onAccepted()));
 	connect(d.data(), SIGNAL(reject()), this, SLOT(onRejected()));
 

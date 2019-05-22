@@ -76,9 +76,9 @@ Sandbox::Sandbox(
 	not_null<Core::Launcher*> launcher,
 	int &argc,
 	char **argv)
-	: QApplication(argc, argv)
-	, _mainThreadId(QThread::currentThreadId())
-	, _launcher(launcher) {
+: QApplication(argc, argv)
+, _mainThreadId(QThread::currentThreadId())
+, _launcher(launcher) {
 }
 
 int Sandbox::start() {
@@ -121,10 +121,11 @@ int Sandbox::start() {
 		[=] { newInstanceConnected(); });
 
 	crl::on_main(this, [=] { checkForQuit(); });
-	connect(
-		this,
-		&QCoreApplication::aboutToQuit,
-		[=] { closeApplication(); });
+	connect(this, &QCoreApplication::aboutToQuit, [=] {
+		customEnterFromEventLoop([&] {
+			closeApplication();
+		});
+	});
 
 	if (cManyInstance()) {
 		LOG(("Many instance allowed, starting..."));

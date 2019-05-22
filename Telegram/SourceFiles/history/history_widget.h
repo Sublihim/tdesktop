@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/field_autocomplete.h"
 #include "window/section_widget.h"
 #include "ui/widgets/input_fields.h"
+#include "ui/effects/animations.h"
 #include "ui/rp_widget.h"
 #include "base/flags.h"
 #include "base/timer.h"
@@ -152,14 +153,13 @@ public:
 
 	void updateRecentStickers();
 
-	void destroyData();
-
 	void updateFieldPlaceholder();
 	void updateStickersByEmoji();
 
 	bool confirmSendingFiles(const QStringList &files);
 	bool confirmSendingFiles(not_null<const QMimeData*> data);
-	void sendFileConfirmed(const std::shared_ptr<FileLoadResult> &file);
+	void sendFileConfirmed(const std::shared_ptr<FileLoadResult> &file,
+		const std::optional<FullMsgId> &oldId = std::nullopt);
 
 	void updateControlsVisibility();
 	void updateControlsGeometry();
@@ -199,7 +199,6 @@ public:
 	void editMessage(not_null<HistoryItem*> item);
 	void pinMessage(FullMsgId itemId);
 	void unpinMessage(FullMsgId itemId);
-	void copyPostLink(FullMsgId itemId);
 
 	MsgId replyToId() const;
 	void messageDataReceived(ChannelData *channel, MsgId msgId);
@@ -219,10 +218,10 @@ public:
 	void updatePreview();
 	void previewCancel();
 
-	void step_recording(float64 ms, bool timer);
+	bool recordingAnimationCallback(crl::time now);
 	void stopRecording(bool send);
 
-	void onListEscapePressed();
+	void escape();
 
 	void sendBotCommand(PeerData *peer, UserData *bot, const QString &cmd, MsgId replyTo);
 	void hideSingleUseKeyboard(PeerData *peer, MsgId replyTo);
@@ -304,7 +303,6 @@ signals:
 	void cancelled();
 
 public slots:
-	void onCancel();
 	void onPinnedHide();
 	void onFieldBarCancel();
 
@@ -456,9 +454,20 @@ private:
 		const FullMsgId &msgId,
 		bool silent,
 		const MTPInputFile &file,
-		const MTPInputFile &thumb);
+		const MTPInputFile &thumb,
+		bool edit = false);
 	void documentProgress(const FullMsgId &msgId);
 	void documentFailed(const FullMsgId &msgId);
+
+	void documentEdited(
+		const FullMsgId &msgId,
+		bool silent,
+		const MTPInputFile &file);
+
+	void photoEdited(
+		const FullMsgId &msgId,
+		bool silent,
+		const MTPInputFile &file);
 
 	void itemRemoved(not_null<const HistoryItem*> item);
 
@@ -549,7 +558,7 @@ private:
 	void drawRecording(Painter &p, float64 recordActive);
 	void drawPinnedBar(Painter &p);
 	void drawRestrictedWrite(Painter &p, const QString &error);
-	bool paintShowAnimationFrame(crl::time ms);
+	bool paintShowAnimationFrame();
 
 	void updateMouseTracking();
 
@@ -669,7 +678,7 @@ private:
 	int countAutomaticScrollTop();
 	void preloadHistoryByScroll();
 	void checkReplyReturns();
-	void scrollToAnimationCallback(FullMsgId attachToId);
+	void scrollToAnimationCallback(FullMsgId attachToId, int relativeTo);
 
 	bool readyToForward() const;
 	bool hasSilentToggle() const;
@@ -706,13 +715,13 @@ private:
 
 	crl::time _lastUserScrolled = 0;
 	bool _synteticScrollEvent = false;
-	Animation _scrollToAnimation;
+	Ui::Animations::Simple _scrollToAnimation;
 
-	Animation _historyDownShown;
+	Ui::Animations::Simple _historyDownShown;
 	bool _historyDownIsShown = false;
 	object_ptr<Ui::HistoryDownButton> _historyDown;
 
-	Animation _unreadMentionsShown;
+	Ui::Animations::Simple _unreadMentionsShown;
 	bool _unreadMentionsIsShown = false;
 	object_ptr<Ui::HistoryDownButton> _unreadMentions;
 
@@ -768,9 +777,9 @@ private:
 	rpl::lifetime _uploaderSubscriptions;
 
 	// This can animate for a very long time (like in music playing),
-	// so it should be a BasicAnimation, not an Animation.
-	BasicAnimation _a_recording;
-	anim::value a_recordingLevel;
+	// so it should be a Basic, not a Simple animation.
+	Ui::Animations::Basic _recordingAnimation;
+	anim::value _recordingLevel;
 
 	bool kbWasHidden() const;
 
@@ -796,7 +805,7 @@ private:
 
 	QString _confirmSource;
 
-	Animation _a_show;
+	Ui::Animations::Simple _a_show;
 	Window::SlideDirection _showDirection;
 	QPixmap _cacheUnder, _cacheOver;
 

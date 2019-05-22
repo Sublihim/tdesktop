@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "mtproto/sender.h"
 #include "chat_helpers/stickers.h"
+#include "ui/effects/animations.h"
 #include "ui/widgets/input_fields.h"
 
 class ConfirmBox;
@@ -199,6 +200,7 @@ private:
 		Row(
 			uint64 id,
 			uint64 accessHash,
+			ImagePtr thumbnail,
 			DocumentData *sticker,
 			int32 count,
 			const QString &title,
@@ -217,6 +219,7 @@ private:
 
 		uint64 id = 0;
 		uint64 accessHash = 0;
+		ImagePtr thumbnail;
 		DocumentData *sticker = nullptr;
 		int32 count = 0;
 		QString title;
@@ -268,9 +271,9 @@ private:
 	QRect relativeButtonRect(bool removeButton) const;
 	void ensureRipple(const style::RippleAnimation &st, QImage mask, bool removeButton);
 
-	void step_shifting(crl::time ms, bool timer);
-	void paintRow(Painter &p, Row *set, int index, crl::time ms);
-	void paintFakeButton(Painter &p, Row *set, int index, crl::time ms);
+	bool shiftingAnimationCallback(crl::time now);
+	void paintRow(Painter &p, Row *set, int index);
+	void paintFakeButton(Painter &p, Row *set, int index);
 	void clear();
 	void setActionSel(int32 actionSel);
 	float64 aboveShadowOpacity() const;
@@ -279,7 +282,7 @@ private:
 
 	void updateControlsGeometry();
 	void rebuildAppendSet(const Stickers::Set &set, int maxNameWidth);
-	void fillSetCover(const Stickers::Set &set, DocumentData **outSticker, int *outWidth, int *outHeight) const;
+	void fillSetCover(const Stickers::Set &set, ImagePtr *thumbnail, DocumentData **outSticker, int *outWidth, int *outHeight) const;
 	int fillSetCount(const Stickers::Set &set) const;
 	QString fillSetTitle(const Stickers::Set &set, int maxNameWidth, int *outTitleWidth) const;
 	void fillSetFlags(const Stickers::Set &set, bool *outInstalled, bool *outOfficial, bool *outUnread, bool *outArchived);
@@ -295,10 +298,10 @@ private:
 	int32 _rowHeight;
 
 	std::vector<std::unique_ptr<Row>> _rows;
-	QList<crl::time> _animStartTimes;
+	std::vector<crl::time> _shiftingStartTimes;
 	crl::time _aboveShadowFadeStart = 0;
 	anim::value _aboveShadowFadeOpacity;
-	BasicAnimation _a_shifting;
+	Ui::Animations::Basic _shiftingAnimation;
 
 	Fn<void(uint64 setId)> _installSetCallback;
 	Fn<void()> _loadMoreCallback;

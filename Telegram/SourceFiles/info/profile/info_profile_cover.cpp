@@ -43,8 +43,7 @@ public:
 		Painter &p,
 		int left,
 		int top,
-		int outerWidth,
-		crl::time ms) override;
+		int outerWidth) override;
 	QImage prepareRippleMask() const override;
 	bool checkRippleStartPosition(QPoint position) const override;
 
@@ -71,8 +70,7 @@ void SectionToggle::paint(
 		Painter &p,
 		int left,
 		int top,
-		int outerWidth,
-		crl::time ms) {
+		int outerWidth) {
 	auto sqrt2 = sqrt(2.);
 	auto vLeft = rtlpoint(left + _st.skip, 0, outerWidth).x() + 0.;
 	auto vTop = top + _st.skip + 0.;
@@ -89,7 +87,7 @@ void SectionToggle::paint(
 		{ vLeft + (vWidth / 2.), vTop + (vHeight * 3. / 4.) + vStroke },
 	} };
 
-	auto toggled = currentAnimationValue(ms);
+	auto toggled = currentAnimationValue();
 	auto alpha = (toggled - 1.) * M_PI_2;
 	auto cosalpha = cos(alpha);
 	auto sinalpha = sin(alpha);
@@ -128,11 +126,11 @@ bool SectionToggle::checkRippleStartPosition(QPoint position) const {
 }
 
 auto MembersStatusText(int count) {
-	return lng_chat_status_members(lt_count, count);
+	return lng_chat_status_members(lt_count_decimal, count);
 };
 
 auto OnlineStatusText(int count) {
-	return lng_chat_status_online(lt_count, count);
+	return lng_chat_status_online(lt_count_decimal, count);
 };
 
 auto ChatStatusText(int fullCount, int onlineCount, bool isGroup) {
@@ -141,7 +139,7 @@ auto ChatStatusText(int fullCount, int onlineCount, bool isGroup) {
 			lt_members_count, MembersStatusText(fullCount),
 			lt_online_count, OnlineStatusText(onlineCount));
 	} else if (fullCount > 0) {
-		return lng_chat_status_members(lt_count, fullCount);
+		return lng_chat_status_members(lt_count_decimal, fullCount);
 	}
 	return lang(isGroup
 		? lng_group_status
