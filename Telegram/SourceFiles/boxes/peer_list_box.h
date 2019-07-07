@@ -92,7 +92,6 @@ public:
 	}
 	virtual void paintAction(
 		Painter &p,
-		TimeMs ms,
 		int x,
 		int y,
 		int outerWidth,
@@ -101,7 +100,7 @@ public:
 	}
 
 	void refreshName(const style::PeerListItem &st);
-	const Text &name() const {
+	const Ui::Text::String &name() const {
 		return _name;
 	}
 
@@ -111,7 +110,7 @@ public:
 		Custom,
 	};
 	void refreshStatus();
-	TimeMs refreshStatusTime() const;
+	crl::time refreshStatusTime() const;
 
 	void setAbsoluteIndex(int index) {
 		_absoluteIndex = index;
@@ -158,11 +157,10 @@ public:
 		QPoint point,
 		UpdateCallback updateCallback);
 	void stopLastRipple();
-	void paintRipple(Painter &p, TimeMs ms, int x, int y, int outerWidth);
+	void paintRipple(Painter &p, int x, int y, int outerWidth);
 	void paintUserpic(
 		Painter &p,
 		const style::PeerListItem &st,
-		TimeMs ms,
 		int x,
 		int y,
 		int outerWidth);
@@ -205,10 +203,10 @@ private:
 	not_null<PeerData*> _peer;
 	std::unique_ptr<Ui::RippleAnimation> _ripple;
 	std::unique_ptr<Ui::RoundImageCheckbox> _checkbox;
-	Text _name;
-	Text _status;
+	Ui::Text::String _name;
+	Ui::Text::String _status;
 	StatusType _statusType = StatusType::Online;
-	TimeMs _statusValidTill = 0;
+	crl::time _statusValidTill = 0;
 	base::flat_set<QChar> _nameFirstLetters;
 	int _absoluteIndex = -1;
 	State _disabledState = State::Active;
@@ -227,12 +225,13 @@ struct PeerListState;
 
 class PeerListDelegate {
 public:
-	virtual void peerListSetTitle(Fn<QString()> title) = 0;
-	virtual void peerListSetAdditionalTitle(Fn<QString()> title) = 0;
+	virtual void peerListSetTitle(rpl::producer<QString> title) = 0;
+	virtual void peerListSetAdditionalTitle(rpl::producer<QString> title) = 0;
 	virtual void peerListSetDescription(object_ptr<Ui::FlatLabel> description) = 0;
 	virtual void peerListSetSearchLoading(object_ptr<Ui::FlatLabel> loading) = 0;
 	virtual void peerListSetSearchNoResults(object_ptr<Ui::FlatLabel> noResults) = 0;
 	virtual void peerListSetAboveWidget(object_ptr<TWidget> aboveWidget) = 0;
+	virtual void peerListSetBelowWidget(object_ptr<TWidget> belowWidget) = 0;
 	virtual void peerListSetSearchMode(PeerListSearchMode mode) = 0;
 	virtual void peerListAppendRow(std::unique_ptr<PeerListRow> row) = 0;
 	virtual void peerListAppendSearchRow(std::unique_ptr<PeerListRow> row) = 0;
@@ -360,6 +359,8 @@ public:
 	virtual void restoreState(
 		std::unique_ptr<PeerListState> state);
 
+	virtual int contentWidth() const;
+
 	bool isRowSelected(not_null<PeerData*> peer) {
 		return delegate()->peerListIsRowSelected(peer);
 	}
@@ -459,7 +460,8 @@ public:
 	void setDescription(object_ptr<Ui::FlatLabel> description);
 	void setSearchLoading(object_ptr<Ui::FlatLabel> loading);
 	void setSearchNoResults(object_ptr<Ui::FlatLabel> noResults);
-	void setAboveWidget(object_ptr<TWidget> aboveWidget);
+	void setAboveWidget(object_ptr<TWidget> widget);
+	void setBelowWidget(object_ptr<TWidget> width);
 	void refreshRows();
 
 	void setSearchMode(PeerListSearchMode mode);
@@ -561,7 +563,7 @@ private:
 	RowIndex findRowIndex(not_null<PeerListRow*> row, RowIndex hint = RowIndex());
 	QRect getActionRect(not_null<PeerListRow*> row, RowIndex index) const;
 
-	TimeMs paintRow(Painter &p, TimeMs ms, RowIndex index);
+	crl::time paintRow(Painter &p, crl::time ms, RowIndex index);
 
 	void addRowEntry(not_null<PeerListRow*> row);
 	void addToSearchIndex(not_null<PeerListRow*> row);
@@ -615,7 +617,9 @@ private:
 	std::vector<not_null<PeerListRow*>> _filterResults;
 
 	int _aboveHeight = 0;
+	int _belowHeight = 0;
 	object_ptr<TWidget> _aboveWidget = { nullptr };
+	object_ptr<TWidget> _belowWidget = { nullptr };
 	object_ptr<Ui::FlatLabel> _description = { nullptr };
 	object_ptr<Ui::FlatLabel> _searchNoResults = { nullptr };
 	object_ptr<Ui::FlatLabel> _searchLoading = { nullptr };
@@ -694,6 +698,9 @@ public:
 	void peerListSetAboveWidget(object_ptr<TWidget> aboveWidget) override {
 		_content->setAboveWidget(std::move(aboveWidget));
 	}
+	void peerListSetBelowWidget(object_ptr<TWidget> belowWidget) override {
+		_content->setBelowWidget(std::move(belowWidget));
+	}
 	void peerListSetSearchMode(PeerListSearchMode mode) override {
 		_content->setSearchMode(mode);
 	}
@@ -748,11 +755,10 @@ public:
 		std::unique_ptr<PeerListController> controller,
 		Fn<void(not_null<PeerListBox*>)> init);
 
-	void peerListSetTitle(Fn<QString()> title) override {
+	void peerListSetTitle(rpl::producer<QString> title) override {
 		setTitle(std::move(title));
 	}
-	void peerListSetAdditionalTitle(
-			Fn<QString()> title) override {
+	void peerListSetAdditionalTitle(rpl::producer<QString> title) override {
 		setAdditionalTitle(std::move(title));
 	}
 	void peerListSetSearchMode(PeerListSearchMode mode) override;

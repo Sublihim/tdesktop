@@ -18,8 +18,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_icon.h"
 #include "info/profile/info_profile_values.h"
 #include "boxes/peers/edit_participants_box.h"
-#include "boxes/peers/manage_peer_box.h"
-#include "window/window_controller.h"
+#include "boxes/peers/edit_peer_info_box.h"
+#include "window/window_session_controller.h"
 #include "mainwindow.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
@@ -71,55 +71,59 @@ void ApplyDependencies(
 		return result;
 	};
 
-	while (true) {
+	const auto maxFixesCount = int(checkboxes.size());
+	for (auto i = 0; i != maxFixesCount; ++i) {
 		if (!applySomeDependency()) {
 			break;
 		}
 	};
 }
 
-std::vector<std::pair<ChatRestrictions, LangKey>> RestrictionLabels() {
-	using Flag = ChatRestriction;
-
-	return {
-		{ Flag::f_send_messages, lng_rights_chat_send_text },
-		{ Flag::f_send_media, lng_rights_chat_send_media },
-		{ Flag::f_send_stickers
-		| Flag::f_send_gifs
-		| Flag::f_send_games
-		| Flag::f_send_inline, lng_rights_chat_send_stickers },
-		{ Flag::f_embed_links, lng_rights_chat_send_links },
-		{ Flag::f_send_polls, lng_rights_chat_send_polls },
-		{ Flag::f_invite_users, lng_rights_chat_add_members },
-		{ Flag::f_pin_messages, lng_rights_group_pin },
-		{ Flag::f_change_info, lng_rights_group_info },
+std::vector<std::pair<ChatRestrictions, QString>> RestrictionLabels() {
+	const auto langKeys = {
+		tr::lng_rights_chat_send_text,
+		tr::lng_rights_chat_send_media,
+		tr::lng_rights_chat_send_stickers,
+		tr::lng_rights_chat_send_links,
+		tr::lng_rights_chat_send_polls,
+		tr::lng_rights_chat_add_members,
+		tr::lng_rights_group_pin,
+		tr::lng_rights_group_info,
 	};
+
+	std::vector<std::pair<ChatRestrictions, QString>> vector;
+	const auto restrictions = Data::ListOfRestrictions();
+	auto i = 0;
+	for (const auto &key : langKeys) {
+		vector.emplace_back(restrictions[i++], key(tr::now));
+	}
+	return vector;
 }
 
-std::vector<std::pair<ChatAdminRights, LangKey>> AdminRightLabels(
+std::vector<std::pair<ChatAdminRights, QString>> AdminRightLabels(
 		bool isGroup,
 		bool anyoneCanAddMembers) {
 	using Flag = ChatAdminRight;
 
 	if (isGroup) {
 		return {
-			{ Flag::f_change_info, lng_rights_group_info },
-			{ Flag::f_delete_messages, lng_rights_group_delete },
-			{ Flag::f_ban_users, lng_rights_group_ban },
+			{ Flag::f_change_info, tr::lng_rights_group_info(tr::now) },
+			{ Flag::f_delete_messages, tr::lng_rights_group_delete(tr::now) },
+			{ Flag::f_ban_users, tr::lng_rights_group_ban(tr::now) },
 			{ Flag::f_invite_users, anyoneCanAddMembers
-				? lng_rights_group_invite_link
-				: lng_rights_group_invite },
-			{ Flag::f_pin_messages, lng_rights_group_pin },
-			{ Flag::f_add_admins, lng_rights_add_admins },
+				? tr::lng_rights_group_invite_link(tr::now)
+				: tr::lng_rights_group_invite(tr::now) },
+			{ Flag::f_pin_messages, tr::lng_rights_group_pin(tr::now) },
+			{ Flag::f_add_admins, tr::lng_rights_add_admins(tr::now) },
 		};
 	} else {
 		return {
-			{ Flag::f_change_info, lng_rights_channel_info },
-			{ Flag::f_post_messages, lng_rights_channel_post },
-			{ Flag::f_edit_messages, lng_rights_channel_edit },
-			{ Flag::f_delete_messages, lng_rights_channel_delete },
-			{ Flag::f_invite_users, lng_rights_group_invite },
-			{ Flag::f_add_admins, lng_rights_add_admins }
+			{ Flag::f_change_info, tr::lng_rights_channel_info(tr::now) },
+			{ Flag::f_post_messages, tr::lng_rights_channel_post(tr::now) },
+			{ Flag::f_edit_messages, tr::lng_rights_channel_edit(tr::now) },
+			{ Flag::f_delete_messages, tr::lng_rights_channel_delete(tr::now) },
+			{ Flag::f_invite_users, tr::lng_rights_group_invite(tr::now) },
+			{ Flag::f_add_admins, tr::lng_rights_add_admins(tr::now) }
 		};
 	}
 }
@@ -142,10 +146,10 @@ auto Dependencies(ChatRestrictions)
 		{ Flag::f_send_stickers, Flag::f_send_inline },
 
 		// stickers -> send_media
-		{ Flag::f_send_stickers, Flag::f_send_media },
+		{ Flag::f_send_stickers, Flag::f_send_messages },
 
 		// embed_links -> send_media
-		{ Flag::f_embed_links, Flag::f_send_media },
+		{ Flag::f_embed_links, Flag::f_send_messages },
 
 		// send_media -> send_messages
 		{ Flag::f_send_media, Flag::f_send_messages },
@@ -220,14 +224,14 @@ ChatAdminRights DisabledByDefaultRestrictions(not_null<PeerData*> peer) {
 	using Flag = ChatAdminRight;
 	using Restriction = ChatRestriction;
 
-	const auto restrictions = [&] {
+	const auto restrictions = FixDependentRestrictions([&] {
 		if (const auto chat = peer->asChat()) {
 			return chat->defaultRestrictions();
 		} else if (const auto channel = peer->asChannel()) {
 			return channel->defaultRestrictions();
 		}
 		Unexpected("User in DisabledByDefaultRestrictions.");
-	}();
+	}());
 	return Flag(0)
 		| ((restrictions & Restriction::f_pin_messages)
 			? Flag(0)
@@ -246,6 +250,40 @@ ChatAdminRights DisabledByDefaultRestrictions(not_null<PeerData*> peer) {
 			: Flag::f_change_info);
 }
 
+ChatRestrictions FixDependentRestrictions(ChatRestrictions restrictions) {
+	const auto &dependencies = Dependencies(restrictions);
+
+	// Fix iOS bug of saving send_inline like embed_links.
+	// We copy send_stickers to send_inline.
+	if (restrictions & ChatRestriction::f_send_stickers) {
+		restrictions |= ChatRestriction::f_send_inline;
+	} else {
+		restrictions &= ~ChatRestriction::f_send_inline;
+	}
+
+	// Apply the strictest.
+	const auto fixOne = [&] {
+		for (const auto [first, second] : dependencies) {
+			if ((restrictions & second) && !(restrictions & first)) {
+				restrictions |= first;
+				return true;
+			}
+		}
+		return false;
+	};
+	while (fixOne()) {
+	}
+	return restrictions;
+}
+
+ChatAdminRights FullAdminRights(bool isGroup) {
+	auto result = ChatAdminRights();
+	for (const auto &[flag, label] : AdminRightLabels(isGroup, true)) {
+		result |= flag;
+	}
+	return result;
+}
+
 EditPeerPermissionsBox::EditPeerPermissionsBox(
 	QWidget*,
 	not_null<PeerData*> peer)
@@ -260,7 +298,7 @@ auto EditPeerPermissionsBox::saveEvents() const
 }
 
 void EditPeerPermissionsBox::prepare() {
-	setTitle(langFactory(lng_manage_peer_permissions));
+	setTitle(tr::lng_manage_peer_permissions());
 
 	const auto inner = setInnerWidget(object_ptr<Ui::VerticalLayout>(this));
 
@@ -268,7 +306,7 @@ void EditPeerPermissionsBox::prepare() {
 	using Flags = ChatRestrictions;
 
 	const auto disabledByAdminRights = DisabledByAdminRights(_peer);
-	const auto restrictions = [&] {
+	const auto restrictions = FixDependentRestrictions([&] {
 		if (const auto chat = _peer->asChat()) {
 			return chat->defaultRestrictions()
 				| disabledByAdminRights;
@@ -280,17 +318,17 @@ void EditPeerPermissionsBox::prepare() {
 				| disabledByAdminRights;
 		}
 		Unexpected("User in EditPeerPermissionsBox.");
-	}();
+	}());
 	const auto disabledMessages = [&] {
 		auto result = std::map<Flags, QString>();
 			result.emplace(
 				disabledByAdminRights,
-				lang(lng_rights_permission_cant_edit));
+				tr::lng_rights_permission_cant_edit(tr::now));
 		if (const auto channel = _peer->asChannel()) {
 			if (channel->isPublic()) {
 				result.emplace(
 					Flag::f_change_info | Flag::f_pin_messages,
-					lang(lng_rights_permission_unavailable));
+					tr::lng_rights_permission_unavailable(tr::now));
 			}
 		}
 		return result;
@@ -298,7 +336,7 @@ void EditPeerPermissionsBox::prepare() {
 
 	auto [checkboxes, getRestrictions, changes] = CreateEditRestrictions(
 		this,
-		lng_rights_default_restrictions_header,
+		tr::lng_rights_default_restrictions_header(),
 		restrictions,
 		disabledMessages);
 
@@ -307,8 +345,8 @@ void EditPeerPermissionsBox::prepare() {
 	addBannedButtons(inner);
 
 	_value = getRestrictions;
-	_save = addButton(langFactory(lng_settings_save));
-	addButton(langFactory(lng_cancel), [=] { closeBox(); });
+	_save = addButton(tr::lng_settings_save());
+	addButton(tr::lng_cancel(), [=] { closeBox(); });
 
 	setDimensionsToContent(st::boxWidth, inner);
 }
@@ -326,10 +364,10 @@ void EditPeerPermissionsBox::addBannedButtons(
 		object_ptr<BoxContentDivider>(container),
 		{ 0, st::infoProfileSkip, 0, st::infoProfileSkip });
 
-	const auto navigation = App::wnd()->controller();
-	ManagePeerBox::CreateButton(
+	const auto navigation = App::wnd()->sessionController();
+	container->add(EditPeerInfoBox::CreateButton(
 		container,
-		Lang::Viewer(lng_manage_peer_exceptions),
+		tr::lng_manage_peer_exceptions(),
 		(channel
 			? Info::Profile::RestrictedCountValue(channel)
 			: rpl::single(0)) | ToPositiveNumberString(),
@@ -339,11 +377,11 @@ void EditPeerPermissionsBox::addBannedButtons(
 				_peer,
 				ParticipantsBoxController::Role::Restricted);
 		},
-		st::peerPermissionsButton);
+		st::peerPermissionsButton));
 	if (channel) {
-		ManagePeerBox::CreateButton(
+		container->add(EditPeerInfoBox::CreateButton(
 			container,
-			Lang::Viewer(lng_manage_peer_removed_users),
+			tr::lng_manage_peer_removed_users(),
 			Info::Profile::KickedCountValue(channel)
 			| ToPositiveNumberString(),
 			[=] {
@@ -352,7 +390,7 @@ void EditPeerPermissionsBox::addBannedButtons(
 					_peer,
 					ParticipantsBoxController::Role::Kicked);
 			},
-			st::peerPermissionsButton);
+			st::peerPermissionsButton));
 	}
 }
 
@@ -362,7 +400,7 @@ template <
 	typename FlagLabelPairs>
 EditFlagsControl<Flags> CreateEditFlags(
 		QWidget *parent,
-		LangKey header,
+		rpl::producer<QString> header,
 		Flags checked,
 		const DisabledMessagePairs &disabledMessagePairs,
 		const FlagLabelPairs &flagLabelPairs) {
@@ -395,7 +433,7 @@ EditFlagsControl<Flags> CreateEditFlags(
 	container->add(
 		object_ptr<Ui::FlatLabel>(
 			container,
-			Lang::Viewer(header),
+			std::move(header),
 			st::rightsHeaderLabel),
 		st::rightsHeaderMargin);
 
@@ -435,7 +473,7 @@ EditFlagsControl<Flags> CreateEditFlags(
 		checkboxes->emplace(flags, control);
 	};
 	for (const auto &[flags, label] : flagLabelPairs) {
-		addCheckbox(flags, lang(label));
+		addCheckbox(flags, label);
 	}
 
 	applyDependencies(nullptr);
@@ -452,7 +490,7 @@ EditFlagsControl<Flags> CreateEditFlags(
 
 EditFlagsControl<MTPDchatBannedRights::Flags> CreateEditRestrictions(
 		QWidget *parent,
-		LangKey header,
+		rpl::producer<QString> header,
 		MTPDchatBannedRights::Flags restrictions,
 		std::map<MTPDchatBannedRights::Flags, QString> disabledMessages) {
 	auto result = CreateEditFlags(
@@ -473,7 +511,7 @@ EditFlagsControl<MTPDchatBannedRights::Flags> CreateEditRestrictions(
 
 EditFlagsControl<MTPDchatAdminRights::Flags> CreateEditAdminRights(
 		QWidget *parent,
-		LangKey header,
+	rpl::producer<QString> header,
 		MTPDchatAdminRights::Flags rights,
 		std::map<MTPDchatAdminRights::Flags, QString> disabledMessages,
 		bool isGroup,

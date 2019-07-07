@@ -7,21 +7,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/sandbox.h"
 
-#include "platform/platform_specific.h"
+#include "platform/platform_info.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
 #include "storage/localstorage.h"
 #include "window/notifications_manager.h"
 #include "core/crash_reports.h"
+#include "core/crash_report_window.h"
 #include "core/application.h"
 #include "core/launcher.h"
 #include "core/local_url_handlers.h"
+#include "core/update_checker.h"
 #include "base/timer.h"
 #include "base/concurrent_timer.h"
 #include "base/qthelp_url.h"
 #include "base/qthelp_regex.h"
-#include "core/update_checker.h"
-#include "core/crash_report_window.h"
+#include "ui/effects/animations.h"
 
 namespace Core {
 namespace {
@@ -75,9 +76,9 @@ Sandbox::Sandbox(
 	not_null<Core::Launcher*> launcher,
 	int &argc,
 	char **argv)
-	: QApplication(argc, argv)
-	, _mainThreadId(QThread::currentThreadId())
-	, _launcher(launcher) {
+: QApplication(argc, argv)
+, _mainThreadId(QThread::currentThreadId())
+, _launcher(launcher) {
 }
 
 int Sandbox::start() {
@@ -120,10 +121,11 @@ int Sandbox::start() {
 		[=] { newInstanceConnected(); });
 
 	crl::on_main(this, [=] { checkForQuit(); });
-	connect(
-		this,
-		&QCoreApplication::aboutToQuit,
-		[=] { closeApplication(); });
+	connect(this, &QCoreApplication::aboutToQuit, [=] {
+		customEnterFromEventLoop([&] {
+			closeApplication();
+		});
+	});
 
 	if (cManyInstance()) {
 		LOG(("Many instance allowed, starting..."));
@@ -137,10 +139,27 @@ int Sandbox::start() {
 }
 
 void Sandbox::launchApplication() {
-	if (_application) {
-		return;
-	}
+	InvokeQueued(this, [=] {
+		if (App::quitting()) {
+			quit();
+		} else if (_application) {
+			return;
+		}
+		setupScreenScale();
 
+		_application = std::make_unique<Application>(_launcher);
+
+		// Ideally this should go to constructor.
+		// But we want to catch all native events and Application installs
+		// its own filter that can filter out some of them. So we install
+		// our filter after the Application constructor installs his.
+		installNativeEventFilter(this);
+
+		_application->run();
+	});
+}
+
+void Sandbox::setupScreenScale() {
 	const auto dpi = Sandbox::primaryScreen()->logicalDotsPerInch();
 	LOG(("Primary screen DPI: %1").arg(dpi));
 	if (dpi <= 108) {
@@ -159,7 +178,7 @@ void Sandbox::launchApplication() {
 
 	const auto ratio = devicePixelRatio();
 	if (ratio > 1.) {
-		if ((cPlatform() != dbipMac && cPlatform() != dbipMacOld) || (ratio != 2.)) {
+		if (!Platform::IsMac() || (ratio != 2.)) {
 			LOG(("Found non-trivial Device Pixel Ratio: %1").arg(ratio));
 			LOG(("Environmental variables: QT_DEVICE_PIXEL_RATIO='%1'").arg(QString::fromLatin1(qgetenv("QT_DEVICE_PIXEL_RATIO"))));
 			LOG(("Environmental variables: QT_SCALE_FACTOR='%1'").arg(QString::fromLatin1(qgetenv("QT_SCALE_FACTOR"))));
@@ -170,8 +189,6 @@ void Sandbox::launchApplication() {
 		cSetIntRetinaFactor(int32(ratio));
 		cSetScreenScale(kInterfaceScaleDefault);
 	}
-
-	runApplication();
 }
 
 Sandbox::~Sandbox() = default;
@@ -409,20 +426,6 @@ void Sandbox::checkForQuit() {
 	}
 }
 
-void Sandbox::runApplication() {
-	Expects(!App::quitting());
-
-	_application = std::make_unique<Application>(_launcher);
-
-	// Ideally this should go to constructor.
-	// But we want to catch all native events and Application installs
-	// its own filter that can filter out some of them. So we install
-	// our filter after the Application constructor installs his.
-	installNativeEventFilter(this);
-
-	_application->run();
-}
-
 void Sandbox::refreshGlobalProxy() {
 #ifndef TDESKTOP_DISABLE_NETWORK_PROXY
 	const auto proxy = !Global::started()
@@ -497,6 +500,18 @@ bool Sandbox::notify(QObject *receiver, QEvent *e) {
 	}
 
 	const auto wrap = createEventNestingLevel();
+	const auto type = e->type();
+	if (type == QEvent::UpdateRequest) {
+		_widgetUpdateRequests.fire({});
+		// Profiling.
+		//const auto time = crl::now();
+		//LOG(("[%1] UPDATE STARTED").arg(time));
+		//const auto guard = gsl::finally([&] {
+		//	const auto now = crl::now();
+		//	LOG(("[%1] UPDATE FINISHED (%2)").arg(now).arg(now - time));
+		//});
+		//return QApplication::notify(receiver, e);
+	}
 	return QApplication::notify(receiver, e);
 }
 
@@ -544,6 +559,10 @@ void Sandbox::resumeDelayedWindowActivations() {
 	_delayedActivationsPaused = false;
 }
 
+rpl::producer<> Sandbox::widgetUpdateRequests() const {
+	return _widgetUpdateRequests.events();
+}
+
 ProxyData Sandbox::sandboxProxy() const {
 	return _sandboxProxy;
 }
@@ -579,3 +598,11 @@ void Sandbox::execExternal(const QString &cmd) {
 }
 
 } // namespace Core
+
+namespace crl {
+
+rpl::producer<> on_main_update_requests() {
+	return Core::Sandbox::Instance().widgetUpdateRequests();
+}
+
+} // namespace crl

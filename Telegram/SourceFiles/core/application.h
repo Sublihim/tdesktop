@@ -11,12 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/auth_key.h"
 #include "base/timer.h"
 
-class AuthSession;
 class AuthSessionSettings;
+class MainWindow;
 class MainWidget;
 class FileUploader;
 class Translator;
-class MediaView;
 class BoxContent;
 
 namespace Storage {
@@ -25,11 +24,26 @@ class Databases;
 
 namespace Window {
 struct TermsLock;
+class Controller;
 } // namespace Window
+
+namespace ChatHelpers {
+class EmojiKeywords;
+} // namespace ChatHelpers
 
 namespace App {
 void quit();
 } // namespace App
+
+namespace Main {
+class Account;
+} // namespace Main
+
+namespace Ui {
+namespace Animations {
+class Manager;
+} // namespace Animations
+} // namespace Ui
 
 namespace MTP {
 class DcOptions;
@@ -43,6 +57,9 @@ namespace Media {
 namespace Audio {
 class Instance;
 } // namespace Audio
+namespace View {
+class OverlayWidget;
+} // namespace View
 } // namespace Media
 
 namespace Lang {
@@ -56,15 +73,12 @@ namespace Core {
 class Launcher;
 struct LocalUrlHandler;
 
-class Application final
-	: public QObject
-	, public RPCSender
-	, private base::Subscriber {
+class Application final : public QObject, private base::Subscriber {
 public:
 	Application(not_null<Launcher*> launcher);
-
 	Application(const Application &other) = delete;
 	Application &operator=(const Application &other) = delete;
+	~Application();
 
 	not_null<Launcher*> launcher() const {
 		return _launcher;
@@ -72,8 +86,12 @@ public:
 
 	void run();
 
+	Ui::Animations::Manager &animationManager() const {
+		return *_animationsManager;
+	}
+
 	// Windows interface.
-	MainWindow *getActiveWindow() const;
+	Window::Controller *activeWindow() const;
 	bool closeActiveWindow();
 	bool minimizeActiveWindow();
 	QWidget *getFileDialogParent();
@@ -81,7 +99,7 @@ public:
 		return &_globalShortcutParent;
 	}
 
-	// MediaView interface.
+	// Media view interface.
 	void checkMediaViewActivation();
 	bool hideMediaView();
 	void showPhoto(not_null<const PhotoOpenClickHandler*> link);
@@ -127,26 +145,21 @@ public:
 	}
 	void suggestMainDcId(MTP::DcId mainDcId);
 	void destroyStaleAuthorizationKeys();
+	void configUpdated();
+	[[nodiscard]] rpl::producer<> configUpdates() const;
 
-	// Databases
+	// Databases.
 	Storage::Databases &databases() {
 		return *_databases;
 	}
 
+	// Account component.
+	Main::Account &activeAccount() const {
+		return *_account;
+	}
+
 	// AuthSession component.
-	AuthSession *authSession() {
-		return _authSession.get();
-	}
-	Lang::Instance &langpack() {
-		return *_langpack;
-	}
-	Lang::CloudManager *langCloudManager() {
-		return _langCloudManager.get();
-	}
 	void authSessionCreate(const MTPUser &user);
-	base::Observable<void> &authSessionChanged() {
-		return _authSessionChanged;
-	}
 	int unreadBadge() const;
 	bool unreadBadgeMuted() const;
 	void logOut();
@@ -154,6 +167,17 @@ public:
 	// Media component.
 	Media::Audio::Instance &audio() {
 		return *_audio;
+	}
+
+	// Langpack and emoji keywords.
+	Lang::Instance &langpack() {
+		return *_langpack;
+	}
+	Lang::CloudManager *langCloudManager() {
+		return _langCloudManager.get();
+	}
+	ChatHelpers::EmojiKeywords &emojiKeywords() {
+		return *_emojiKeywords;
 	}
 
 	// Internal links.
@@ -176,11 +200,13 @@ public:
 	[[nodiscard]] std::optional<Window::TermsLock> termsLocked() const;
 	rpl::producer<bool> termsLockChanges() const;
 	rpl::producer<bool> termsLockValue() const;
-	void termsDeleteNow();
 
 	[[nodiscard]] bool locked() const;
 	rpl::producer<bool> lockChanges() const;
 	rpl::producer<bool> lockValue() const;
+
+	[[nodiscard]] crl::time lastNonIdleTime() const;
+	void updateNonIdle();
 
 	void registerLeaveSubscription(QWidget *widget);
 	void unregisterLeaveSubscription(QWidget *widget);
@@ -211,12 +237,13 @@ public:
 		_callDelayedTimer.call(duration, std::move(lambda));
 	}
 
-	~Application();
-
 protected:
 	bool eventFilter(QObject *object, QEvent *event) override;
 
 private:
+	friend bool IsAppLaunched();
+	friend Application &App();
+
 	void destroyMtpKeys(MTP::AuthKeysList &&keys);
 	void allKeysDestroyed();
 
@@ -234,6 +261,8 @@ private:
 	void clearPasscodeLock();
 	void loggedOut();
 
+	static Application *Instance;
+
 	not_null<Launcher*> _launcher;
 
 	// Some fields are just moved from the declaration.
@@ -242,23 +271,25 @@ private:
 
 	QWidget _globalShortcutParent;
 
-	std::unique_ptr<Storage::Databases> _databases;
-	std::unique_ptr<MainWindow> _window;
-	std::unique_ptr<MediaView> _mediaView;
-	std::unique_ptr<Lang::Instance> _langpack;
+	const std::unique_ptr<Storage::Databases> _databases;
+	const std::unique_ptr<Ui::Animations::Manager> _animationsManager;
+	const std::unique_ptr<Main::Account> _account;
+	std::unique_ptr<Window::Controller> _window;
+	std::unique_ptr<Media::View::OverlayWidget> _mediaView;
+	const std::unique_ptr<Lang::Instance> _langpack;
 	std::unique_ptr<Lang::CloudManager> _langCloudManager;
+	const std::unique_ptr<ChatHelpers::EmojiKeywords> _emojiKeywords;
 	std::unique_ptr<Lang::Translator> _translator;
 	std::unique_ptr<MTP::DcOptions> _dcOptions;
 	std::unique_ptr<MTP::Instance> _mtproto;
 	std::unique_ptr<MTP::Instance> _mtprotoForKeysDestroy;
-	std::unique_ptr<AuthSession> _authSession;
-	base::Observable<void> _authSessionChanged;
+	rpl::event_stream<> _configUpdates;
 	base::Observable<void> _passcodedChanged;
 	QPointer<BoxContent> _badProxyDisableBox;
 
-	std::unique_ptr<Media::Audio::Instance> _audio;
-	QImage _logo;
-	QImage _logoNoMargin;
+	const std::unique_ptr<Media::Audio::Instance> _audio;
+	const QImage _logo;
+	const QImage _logoNoMargin;
 
 	rpl::variable<bool> _passcodeLock;
 	rpl::event_stream<bool> _termsLockChanges;
@@ -280,8 +311,11 @@ private:
 
 	rpl::lifetime _lifetime;
 
+	crl::time _lastNonIdleTime = 0;
+
 };
 
-Application &App();
+[[nodiscard]] bool IsAppLaunched();
+[[nodiscard]] Application &App();
 
 } // namespace Core

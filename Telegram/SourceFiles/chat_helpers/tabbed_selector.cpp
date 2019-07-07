@@ -276,7 +276,7 @@ void TabbedSelector::Tab::saveScrollTop() {
 
 TabbedSelector::TabbedSelector(
 	QWidget *parent,
-	not_null<Window::Controller*> controller,
+	not_null<Window::SessionController*> controller,
 	Mode mode)
 : RpWidget(parent)
 , _mode(mode)
@@ -368,7 +368,7 @@ TabbedSelector::TabbedSelector(
 	showAll();
 }
 
-TabbedSelector::Tab TabbedSelector::createTab(SelectorTab type, not_null<Window::Controller*> controller) {
+TabbedSelector::Tab TabbedSelector::createTab(SelectorTab type, not_null<Window::SessionController*> controller) {
 auto createWidget = [&]() -> object_ptr<Inner> {
 	if (!full() && type != SelectorTab::Emoji) {
 		return { nullptr };
@@ -401,28 +401,20 @@ rpl::producer<not_null<DocumentData*>> TabbedSelector::fileChosen() const {
 }
 
 rpl::producer<not_null<PhotoData*>> TabbedSelector::photoChosen() const {
-	return full()
-		? gifs()->photoChosen()
-		: rpl::never<not_null<PhotoData*>>();
+	return full() ? gifs()->photoChosen() : nullptr;
 }
 
 auto TabbedSelector::inlineResultChosen() const
 -> rpl::producer<InlineChosen> {
-	return full()
-		? gifs()->inlineResultChosen()
-		: rpl::never<InlineChosen>();
+	return full() ? gifs()->inlineResultChosen() : nullptr;
 }
 
 rpl::producer<> TabbedSelector::cancelled() const {
-	return full()
-		? gifs()->cancelRequests()
-		: rpl::never<>();
+	return full() ? gifs()->cancelRequests() : nullptr;
 }
 
 rpl::producer<> TabbedSelector::checkForHide() const {
-	return full()
-		? stickers()->checkForHide()
-		: rpl::never<>();
+	return full() ? stickers()->checkForHide() : nullptr;
 }
 
 rpl::producer<> TabbedSelector::slideFinished() const {
@@ -494,11 +486,9 @@ void TabbedSelector::updateRestrictedLabelGeometry() {
 void TabbedSelector::paintEvent(QPaintEvent *e) {
 	Painter p(this);
 
-	auto ms = getms();
-
 	auto switching = (_slideAnimation != nullptr);
 	if (switching) {
-		paintSlideFrame(p, ms);
+		paintSlideFrame(p);
 		if (!_a_slide.animating()) {
 			_slideAnimation.reset();
 			afterShown();
@@ -509,7 +499,7 @@ void TabbedSelector::paintEvent(QPaintEvent *e) {
 	}
 }
 
-void TabbedSelector::paintSlideFrame(Painter &p, TimeMs ms) {
+void TabbedSelector::paintSlideFrame(Painter &p) {
 	if (_roundRadius > 0) {
 		if (full()) {
 			auto topPart = QRect(0, 0, width(), _tabsSlider->height() + _roundRadius);
@@ -521,7 +511,7 @@ void TabbedSelector::paintSlideFrame(Painter &p, TimeMs ms) {
 	} else if (full()) {
 		p.fillRect(0, 0, width(), _tabsSlider->height(), st::emojiPanBg);
 	}
-	auto slideDt = _a_slide.current(ms, 1.);
+	auto slideDt = _a_slide.value(1.);
 	_slideAnimation->paintFrame(p, slideDt, 1.);
 }
 
@@ -621,7 +611,7 @@ void TabbedSelector::hideFinished() {
 		}
 		tab.widget()->panelHideFinished();
 	}
-	_a_slide.finish();
+	_a_slide.stop();
 	_slideAnimation.reset();
 }
 
@@ -631,7 +621,7 @@ void TabbedSelector::showStarted() {
 	}
 	currentTab()->widget()->refreshRecent();
 	currentTab()->widget()->preloadImages();
-	_a_slide.finish();
+	_a_slide.stop();
 	_slideAnimation.reset();
 	showAll();
 }
@@ -673,21 +663,20 @@ void TabbedSelector::setCurrentPeer(PeerData *peer) {
 
 void TabbedSelector::checkRestrictedPeer() {
 	if (_currentPeer) {
-		const auto errorKey = (_currentTabType == SelectorTab::Stickers)
-			? Data::RestrictionErrorKey(
+		const auto error = (_currentTabType == SelectorTab::Stickers)
+			? Data::RestrictionError(
 				_currentPeer,
 				ChatRestriction::f_send_stickers)
 			: (_currentTabType == SelectorTab::Gifs)
-			? Data::RestrictionErrorKey(
+			? Data::RestrictionError(
 				_currentPeer,
 				ChatRestriction::f_send_gifs)
 			: std::nullopt;
-		if (errorKey) {
+		if (error) {
 			if (!_restrictedLabel) {
 				_restrictedLabel.create(
 					this,
-					lang(*errorKey),
-					Ui::FlatLabel::InitType::Simple,
+					*error,
 					st::stickersRestrictedLabel);
 				_restrictedLabel->show();
 				updateRestrictedLabelGeometry();
@@ -759,9 +748,9 @@ void TabbedSelector::createTabsSlider() {
 	_tabsSlider.create(this, st::emojiTabs);
 
 	auto sections = QStringList();
-	sections.push_back(lang(lng_switch_emoji).toUpper());
-	sections.push_back(lang(lng_switch_stickers).toUpper());
-	sections.push_back(lang(lng_switch_gifs).toUpper());
+	sections.push_back(tr::lng_switch_emoji(tr::now).toUpper());
+	sections.push_back(tr::lng_switch_stickers(tr::now).toUpper());
+	sections.push_back(tr::lng_switch_gifs(tr::now).toUpper());
 	_tabsSlider->setSections(sections);
 
 	_tabsSlider->setActiveSectionFast(static_cast<int>(_currentTabType));
@@ -782,6 +771,7 @@ void TabbedSelector::switchTab() {
 	Assert(tab >= 0 && tab < Tab::kCount);
 	auto newTabType = static_cast<SelectorTab>(tab);
 	if (_currentTabType == newTabType) {
+		_scroll->scrollToY(0);
 		return;
 	}
 
@@ -873,7 +863,7 @@ void TabbedSelector::scrollToY(int y) {
 
 TabbedSelector::Inner::Inner(
 	QWidget *parent,
-	not_null<Window::Controller*> controller)
+	not_null<Window::SessionController*> controller)
 : RpWidget(parent)
 , _controller(controller) {
 }

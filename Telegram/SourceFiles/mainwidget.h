@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "ui/rp_widget.h"
+#include "ui/effects/animations.h"
 #include "media/player/media_player_float.h"
 #include "data/data_pts_waiter.h"
 
@@ -17,7 +18,6 @@ class AuthSession;
 struct HistoryMessageMarkupButton;
 class MainWindow;
 class ConfirmBox;
-class DialogsWidget;
 class HistoryWidget;
 class StackItem;
 struct FileLoadResult;
@@ -34,7 +34,7 @@ namespace Dialogs {
 struct RowDescriptor;
 class Row;
 class Key;
-class IndexedList;
+class Widget;
 } // namespace Dialogs
 
 namespace Media {
@@ -42,6 +42,7 @@ namespace Player {
 class Widget;
 class VolumeWidget;
 class Panel;
+struct TrackState;
 } // namespace Player
 } // namespace Media
 
@@ -62,13 +63,13 @@ class SlideWrap;
 } // namespace Ui
 
 namespace Window {
-class Controller;
+class SessionController;
 template <typename Inner>
 class TopBarWrapWidget;
 class SectionMemento;
 class SectionWidget;
 class AbstractSectionWidget;
-class ConnectingWidget;
+class ConnectionState;
 struct SectionSlideParams;
 struct SectionShow;
 enum class Column;
@@ -96,7 +97,7 @@ class MainWidget
 public:
 	using SectionShow = Window::SectionShow;
 
-	MainWidget(QWidget *parent, not_null<Window::Controller*> controller);
+	MainWidget(QWidget *parent, not_null<Window::SessionController*> controller);
 
 	AuthSession &session() const;
 
@@ -122,7 +123,7 @@ public:
 	void activate();
 	void updateReceived(const mtpPrime *from, const mtpPrime *end);
 
-	void createDialog(Dialogs::Key key);
+	void refreshDialog(Dialogs::Key key);
 	void removeDialog(Dialogs::Key key);
 	void repaintDialogRow(Dialogs::Mode list, not_null<Dialogs::Row*> row);
 	void repaintDialogRow(Dialogs::RowDescriptor row);
@@ -156,17 +157,18 @@ public:
 	QPixmap grabForShowAnimation(const Window::SectionSlideParams &params);
 	void checkMainSectionToLayer();
 
-	void onSendFileConfirm(const std::shared_ptr<FileLoadResult> &file);
+	void onSendFileConfirm(
+		const std::shared_ptr<FileLoadResult> &file,
+		const std::optional<FullMsgId> &oldId);
 	bool onSendSticker(DocumentData *sticker);
 
-	void destroyData();
 	void updateOnlineDisplayIn(int32 msecs);
 
 	bool isActive() const;
 	bool doWeReadServerHistory() const;
 	bool doWeReadMentions() const;
 	bool lastWasOnline() const;
-	TimeMs lastSetOnline() const;
+	crl::time lastSetOnline() const;
 
 	void saveDraftToCloud();
 	void applyCloudDraft(History *history);
@@ -176,7 +178,6 @@ public:
 
 	void showForwardLayer(MessageIdsList &&items);
 	void showSendPathsLayer();
-	void deleteLayer(FullMsgId itemId);
 	void cancelUploadLayer(not_null<HistoryItem*> item);
 	void shareUrlLayer(const QString &url, const QString &text);
 	void inlineSwitchLayer(const QString &botAndQuery);
@@ -191,31 +192,15 @@ public:
 	bool sendPaths(PeerId peerId);
 	void onFilesOrForwardDrop(const PeerId &peer, const QMimeData *data);
 	bool selectingPeer() const;
-	void dialogsActivate();
 
 	void deletePhotoLayer(PhotoData *photo);
 
-	bool leaveChatFailed(PeerData *peer, const RPCError &e);
-	void deleteHistoryAfterLeave(PeerData *peer, const MTPUpdates &updates);
-	void deleteMessages(
-		not_null<PeerData*> peer,
-		const QVector<MTPint> &ids,
-		bool revoke);
-	void deletedContact(UserData *user, const MTPcontacts_Link &result);
-	void deleteConversation(
-		not_null<PeerData*> peer,
-		bool deleteHistory = true);
-	void deleteAndExit(ChatData *chat);
-
 	bool sendMessageFail(const RPCError &error);
 
-	Dialogs::IndexedList *contactsList();
-	Dialogs::IndexedList *dialogsList();
-	Dialogs::IndexedList *contactsNoDialogsList();
-
 	// While HistoryInner is not HistoryView::ListWidget.
-	TimeMs highlightStartTime(not_null<const HistoryItem*> item) const;
-	bool historyInSelectionMode() const;
+	crl::time highlightStartTime(not_null<const HistoryItem*> item) const;
+
+	MsgId currentReplyToIdFor(not_null<History*> history) const;
 
 	void sendBotCommand(PeerData *peer, UserData *bot, const QString &cmd, MsgId replyTo);
 	void hideSingleUseKeyboard(PeerData *peer, MsgId replyTo);
@@ -300,12 +285,13 @@ public:
 	void notify_userIsBotChanged(UserData *bot);
 	void notify_historyMuteUpdated(History *history);
 
+	void closeBothPlayers();
+
 	bool isQuitPrevent();
 
 	~MainWidget();
 
 signals:
-	void dialogRowReplaced(Dialogs::Row *oldRow, Dialogs::Row *newRow);
 	void dialogsUpdated();
 
 public slots:
@@ -323,7 +309,7 @@ protected:
 	bool eventFilter(QObject *o, QEvent *e) override;
 
 private:
-	using ChannelGetDifferenceTime = QMap<ChannelData*, TimeMs>;
+	using ChannelGetDifferenceTime = QMap<ChannelData*, crl::time>;
 	enum class ChannelDifferenceRequest {
 		Unknown,
 		PtsGapOrShortPoll,
@@ -348,7 +334,7 @@ private:
 	void animationCallback();
 	void handleAdaptiveLayoutUpdate();
 	void updateWindowAdaptiveLayout();
-	void handleAudioUpdate(const AudioMsgId &audioId);
+	void handleAudioUpdate(const Media::Player::TrackState &state);
 	void updateMediaPlayerPosition();
 	void updateMediaPlaylistPosition(int x);
 	void updateControlsGeometry();
@@ -363,9 +349,6 @@ private:
 
 	void setupConnectingWidget();
 	void createPlayer();
-	void switchToPanelPlayer();
-	void switchToFixedPlayer();
-	void closeBothPlayers();
 	void playerHeightUpdated();
 
 	void setCurrentCall(Calls::Call *call);
@@ -377,10 +360,6 @@ private:
 	void createExportTopBar(Export::View::Content &&data);
 	void destroyExportTopBar();
 	void exportTopBarHeightUpdated();
-
-	void messagesAffected(
-		not_null<PeerData*> peer,
-		const MTPmessages_AffectedMessages &result);
 
 	Window::SectionSlideParams prepareShowAnimation(
 		bool willHaveTopBarShadow);
@@ -416,8 +395,6 @@ private:
 	// Doesn't call sendHistoryChangeNotifications itself.
 	void feedUpdate(const MTPUpdate &update);
 
-	void deleteHistoryPart(DeleteHistoryRequest request, const MTPmessages_AffectedHistory &result);
-
 	void usernameResolveDone(QPair<MsgId, QString> msgIdAndStartToken, const MTPcontacts_ResolvedPeer &result);
 	bool usernameResolveFail(QString name, const RPCError &error);
 
@@ -433,7 +410,7 @@ private:
 
 	not_null<Media::Player::FloatDelegate*> floatPlayerDelegate();
 	not_null<Ui::RpWidget*> floatPlayerWidget() override;
-	not_null<Window::Controller*> floatPlayerController() override;
+	not_null<Window::SessionController*> floatPlayerController() override;
 	not_null<Window::AbstractSectionWidget*> floatPlayerGetSection(
 		Window::Column column) override;
 	void floatPlayerEnumerateSections(Fn<void(
@@ -442,7 +419,7 @@ private:
 	bool floatPlayerIsVisible(not_null<HistoryItem*> item) override;
 	void floatPlayerClosed(FullMsgId itemId);
 
-	bool getDifferenceTimeChanged(ChannelData *channel, int32 ms, ChannelGetDifferenceTime &channelCurTime, TimeMs &curTime);
+	bool getDifferenceTimeChanged(ChannelData *channel, int32 ms, ChannelGetDifferenceTime &channelCurTime, crl::time &curTime);
 
 	void viewsIncrementDone(QVector<MTPint> ids, const MTPVector<MTPint> &result, mtpRequestId req);
 	bool viewsIncrementFail(const RPCError &error, mtpRequestId req);
@@ -466,27 +443,29 @@ private:
 		const Data::WallPaper &background,
 		QImage &&image);
 
-	not_null<Window::Controller*> _controller;
+	void handleHistoryBack();
+
+	not_null<Window::SessionController*> _controller;
 	bool _started = false;
 
-	Animation _a_show;
+	Ui::Animations::Simple _a_show;
 	bool _showBack = false;
 	QPixmap _cacheUnder, _cacheOver;
 
 	int _dialogsWidth = 0;
 	int _thirdColumnWidth = 0;
-	Animation _a_dialogsWidth;
+	Ui::Animations::Simple _a_dialogsWidth;
 
 	object_ptr<Ui::PlainShadow> _sideShadow;
 	object_ptr<Ui::PlainShadow> _thirdShadow = { nullptr };
 	object_ptr<Ui::ResizeArea> _firstColumnResizeArea = { nullptr };
 	object_ptr<Ui::ResizeArea> _thirdColumnResizeArea = { nullptr };
-	object_ptr<DialogsWidget> _dialogs;
+	object_ptr<Dialogs::Widget> _dialogs;
 	object_ptr<HistoryWidget> _history;
 	object_ptr<Window::SectionWidget> _mainSection = { nullptr };
 	object_ptr<Window::SectionWidget> _thirdSection = { nullptr };
 	std::unique_ptr<Window::SectionMemento> _thirdSectionFromStack;
-	base::unique_qptr<Window::ConnectingWidget> _connecting;
+	std::unique_ptr<Window::ConnectionState> _connecting;
 
 	base::weak_ptr<Calls::Call> _currentCall;
 	object_ptr<Ui::SlideWrap<Calls::TopBar>> _callTopBar = { nullptr };
@@ -499,7 +478,6 @@ private:
 		= { nullptr };
 	object_ptr<Media::Player::VolumeWidget> _playerVolume = { nullptr };
 	object_ptr<Media::Player::Panel> _playerPlaylist;
-	object_ptr<Media::Player::Panel> _playerPanel;
 	bool _playerUsingPanel = false;
 
 	base::unique_qptr<Window::HistoryHider> _hider;
@@ -518,8 +496,8 @@ private:
 	PtsWaiter _ptsWaiter;
 
 	ChannelGetDifferenceTime _channelGetDifferenceTimeByPts, _channelGetDifferenceTimeAfterFail;
-	TimeMs _getDifferenceTimeByPts = 0;
-	TimeMs _getDifferenceTimeAfterFail = 0;
+	crl::time _getDifferenceTimeByPts = 0;
+	crl::time _getDifferenceTimeAfterFail = 0;
 
 	base::Timer _byPtsTimer;
 
@@ -532,14 +510,14 @@ private:
 	base::Timer _onlineTimer;
 	base::Timer _idleFinishTimer;
 	bool _lastWasOnline = false;
-	TimeMs _lastSetOnline = 0;
+	crl::time _lastSetOnline = 0;
 	bool _isIdle = false;
 
 	int32 _failDifferenceTimeout = 1; // growing timeout for getDifference calls, if it fails
 	QMap<ChannelData*, int32> _channelFailDifferenceTimeout; // growing timeout for getChannelDifference calls, if it fails
 	base::Timer _failDifferenceTimer;
 
-	TimeMs _lastUpdateTime = 0;
+	crl::time _lastUpdateTime = 0;
 	bool _handlingChannelDifference = false;
 
 	QPixmap _cachedBackground;

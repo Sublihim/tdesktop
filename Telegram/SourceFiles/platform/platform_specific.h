@@ -40,8 +40,10 @@ void RequestPermission(PermissionType type, Fn<void(PermissionStatus)> resultCal
 void OpenSystemSettingsForPermission(PermissionType type);
 bool OpenSystemSettings(SystemSettingsType type);
 
-QString SystemLanguage();
-QString SystemCountry();
+[[nodiscard]] std::optional<crl::time> LastUserInputTime();
+[[nodiscard]] inline bool LastUserInputTimeSupported() {
+	return LastUserInputTime().has_value();
+}
 
 namespace ThirdParty {
 

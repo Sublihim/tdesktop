@@ -22,7 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
-#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 #include "history/view/history_view_cursor_state.h"
 
 namespace ChatHelpers {
@@ -63,7 +63,7 @@ private:
 
 GifsListWidget::Footer::Footer(not_null<GifsListWidget*> parent) : InnerFooter(parent)
 , _pan(parent)
-, _field(this, st::gifsSearchField, langFactory(lng_gifs_search))
+, _field(this, st::gifsSearchField, tr::lng_gifs_search())
 , _cancel(this, st::gifsSearchCancel) {
 	connect(_field, &Ui::InputField::submitted, [=] {
 		_pan->sendInlineRequest();
@@ -124,7 +124,7 @@ void GifsListWidget::Footer::processPanelHideFinished() {
 
 GifsListWidget::GifsListWidget(
 	QWidget *parent,
-	not_null<Window::Controller*> controller)
+	not_null<Window::SessionController*> controller)
 : Inner(parent, controller)
 , _section(Section::Gifs)
 , _updateInlineItems([=] { updateInlineItems(); })
@@ -133,7 +133,11 @@ GifsListWidget::GifsListWidget(
 	setAttribute(Qt::WA_OpaquePaintEvent);
 
 	_inlineRequestTimer.setSingleShot(true);
-	connect(&_inlineRequestTimer, &QTimer::timeout, this, [this] { sendInlineRequest(); });
+	connect(
+		&_inlineRequestTimer,
+		&QTimer::timeout,
+		this,
+		[=] { sendInlineRequest(); });
 
 	Auth().data().savedGifsUpdated(
 	) | rpl::start_with_next([this] {
@@ -142,8 +146,9 @@ GifsListWidget::GifsListWidget(
 	subscribe(Auth().downloaderTaskFinished(), [this] {
 		update();
 	});
-	subscribe(controller->gifPauseLevelChanged(), [this] {
-		if (!this->controller()->isGifPausedAtLeastFor(Window::GifPauseReason::SavedGifs)) {
+	subscribe(controller->gifPauseLevelChanged(), [=] {
+		if (!controller->isGifPausedAtLeastFor(
+				Window::GifPauseReason::SavedGifs)) {
 			update();
 		}
 	});
@@ -176,7 +181,7 @@ void GifsListWidget::visibleTopBottomUpdated(
 	auto top = getVisibleTop();
 	Inner::visibleTopBottomUpdated(visibleTop, visibleBottom);
 	if (top != getVisibleTop()) {
-		_lastScrolled = getms();
+		_lastScrolled = crl::now();
 	}
 	checkLoadMore();
 }
@@ -269,12 +274,14 @@ void GifsListWidget::paintInlineItems(Painter &p, QRect clip) {
 	if (_rows.isEmpty()) {
 		p.setFont(st::normalFont);
 		p.setPen(st::noContactsColor);
-		auto text = lang(_inlineQuery.isEmpty() ? lng_gifs_no_saved : lng_inline_bot_no_results);
+		auto text = _inlineQuery.isEmpty()
+			? tr::lng_gifs_no_saved(tr::now)
+			: tr::lng_inline_bot_no_results(tr::now);
 		p.drawText(QRect(0, 0, width(), (height() / 3) * 2 + st::normalFont->height), text, style::al_center);
 		return;
 	}
 	auto gifPaused = controller()->isGifPausedAtLeastFor(Window::GifPauseReason::SavedGifs);
-	InlineBots::Layout::PaintContext context(getms(), false, gifPaused, false);
+	InlineBots::Layout::PaintContext context(crl::now(), false, gifPaused, false);
 
 	auto top = st::stickerPanPadding;
 	auto fromx = rtl() ? (width() - clip.x() - clip.width()) : clip.x();
@@ -358,16 +365,15 @@ void GifsListWidget::selectInlineResult(int row, int column) {
 			photo->thumbnail()->loadEvenCancelled(Data::FileOrigin());
 		}
 	} else if (const auto document = item->getDocument()) {
-		if (document->loaded()) {
+		if (document->loaded()
+			|| QGuiApplication::keyboardModifiers() == Qt::ControlModifier) {
 			_fileChosen.fire_copy(document);
 		} else if (document->loading()) {
 			document->cancel();
 		} else {
-			DocumentOpenClickHandler::Open(
+			document->save(
 				document->stickerOrGifOrigin(),
-				document,
-				nullptr,
-				ActionOnLoadNone);
+				QString());
 		}
 	} else if (const auto inlineResult = item->getResult()) {
 		if (inlineResult->onChoose(item)) {
@@ -751,7 +757,7 @@ void GifsListWidget::inlineItemLayoutChanged(const InlineBots::Layout::ItemBase 
 }
 
 void GifsListWidget::inlineItemRepaint(const InlineBots::Layout::ItemBase *layout) {
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + 100 <= ms) {
 		update();
 	} else {
@@ -1018,7 +1024,7 @@ void GifsListWidget::showPreview() {
 }
 
 void GifsListWidget::updateInlineItems() {
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + 100 <= ms) {
 		update();
 	} else {

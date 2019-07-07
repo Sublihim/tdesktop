@@ -8,12 +8,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/rp_widget.h"
+#include "ui/effects/animations.h"
 #include "data/data_file_origin.h"
 
 namespace Window {
 
 class MainMenu;
-class Controller;
+class SessionController;
 class SectionMemento;
 struct SectionShow;
 
@@ -96,7 +97,7 @@ public:
 		object_ptr<LayerWidget> layer,
 		anim::type animated);
 	void showMainMenu(
-		not_null<Window::Controller*> controller,
+		not_null<Window::SessionController*> controller,
 		anim::type animated);
 	bool takeToThirdSection();
 
@@ -169,6 +170,7 @@ private:
 	void updateLayerBoxes();
 	void fixOrder();
 	void sendFakeMouseEvent();
+	void clearClosingLayers();
 
 	LayerWidget *currentLayer() {
 		return _layers.empty() ? nullptr : _layers.back().get();
@@ -178,6 +180,7 @@ private:
 	}
 
 	std::vector<std::unique_ptr<LayerWidget>> _layers;
+	std::vector<std::unique_ptr<LayerWidget>> _closingLayers;
 
 	object_ptr<LayerWidget> _specialLayer = { nullptr };
 	object_ptr<MainMenu> _mainMenu = { nullptr };
@@ -194,7 +197,7 @@ private:
 
 class MediaPreviewWidget : public TWidget, private base::Subscriber {
 public:
-	MediaPreviewWidget(QWidget *parent, not_null<Window::Controller*> controller);
+	MediaPreviewWidget(QWidget *parent, not_null<Window::SessionController*> controller);
 
 	void showPreview(
 		Data::FileOrigin origin,
@@ -217,9 +220,9 @@ private:
 	void fillEmojiString();
 	void resetGifAndCache();
 
-	not_null<Window::Controller*> _controller;
+	not_null<Window::SessionController*> _controller;
 
-	Animation _a_shown;
+	Ui::Animations::Simple _a_shown;
 	bool _hiding = false;
 	Data::FileOrigin _origin;
 	DocumentData *_document = nullptr;
@@ -242,8 +245,10 @@ private:
 
 };
 
-template <typename BoxType, typename ...Args>
+class GenericBox;
+
+template <typename BoxType = GenericBox, typename ...Args>
 inline object_ptr<BoxType> Box(Args&&... args) {
-	auto parent = static_cast<QWidget*>(nullptr);
+	const auto parent = static_cast<QWidget*>(nullptr);
 	return object_ptr<BoxType>(parent, std::forward<Args>(args)...);
 }

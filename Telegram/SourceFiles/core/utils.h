@@ -94,7 +94,7 @@ inline bool in_range(Value &&value, From &&from, Till &&till) {
 #define for_const(range_declaration, range_expression) for (range_declaration : std::as_const(range_expression))
 
 template <typename Lambda>
-inline void InvokeQueued(QObject *context, Lambda &&lambda) {
+inline void InvokeQueued(const QObject *context, Lambda &&lambda) {
 	QObject proxy;
 	QObject::connect(&proxy, &QObject::destroyed, context, std::forward<Lambda>(lambda), Qt::QueuedConnection);
 }
@@ -161,10 +161,7 @@ namespace ThirdParty {
 void start();
 void finish();
 
-}
-
-bool checkms(); // returns true if time has changed
-TimeMs getms(bool checked = false);
+} // namespace ThirdParty
 
 const static uint32 _md5_block_size = 64;
 class HashMd5 {
@@ -324,7 +321,7 @@ struct ProxyData {
 	QString user, password;
 
 	std::vector<QString> resolvedIPs;
-	TimeMs resolvedExpireAt = 0;
+	crl::time resolvedExpireAt = 0;
 
 	bool valid() const;
 	bool supportsCalls() const;
@@ -343,23 +340,6 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex = 0);
 QNetworkProxy ToNetworkProxy(const ProxyData &proxy);
 
 static const int MatrixRowShift = 40000;
-
-enum DBIPlatform {
-	dbipWindows = 0,
-	dbipMac = 1,
-	dbipLinux64 = 2,
-	dbipLinux32 = 3,
-	dbipMacOld = 4,
-};
-
-enum DBIPeerReportSpamStatus {
-	dbiprsNoButton = 0, // hidden, but not in the cloud settings yet
-	dbiprsUnknown = 1, // contacts not loaded yet
-	dbiprsShowButton = 2, // show report spam button, each show peer request setting from cloud
-	dbiprsReportSent = 3, // report sent, but the report spam panel is not hidden yet
-	dbiprsHidden = 4, // hidden in the cloud or not needed (bots, contacts, etc), no more requests
-	dbiprsRequesting = 5, // requesting the cloud setting right now
-};
 
 inline int rowscount(int fullCount, int countPerRow) {
 	return (fullCount + countPerRow - 1) / countPerRow;

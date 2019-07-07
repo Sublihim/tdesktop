@@ -23,7 +23,7 @@ public:
 		const QString &phone);
 	~HistoryContact();
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, TimeMs ms) const override;
+	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
 	bool toggleSelectionByHandlerClick(const ClickHandlerPtr &p) const override {
@@ -61,7 +61,7 @@ private:
 
 	int _phonew = 0;
 	QString _fname, _lname, _phone;
-	Text _name;
+	Ui::Text::String _name;
 	std::unique_ptr<Ui::EmptyUserpic> _photoEmpty;
 
 	ClickHandlerPtr _linkl;

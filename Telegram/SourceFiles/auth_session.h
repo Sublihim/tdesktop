@@ -16,6 +16,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 class ApiWrap;
 enum class SendFilesWay;
 
+namespace Main {
+class Account;
+} // namespace Main
+
 namespace Ui {
 enum class InputSubmitSettings;
 } // namespace Ui
@@ -139,12 +143,6 @@ public:
 	bool smallDialogsList() const {
 		return _variables.smallDialogsList;
 	}
-	void setLastTimeVideoPlayedAt(TimeMs time) {
-		_lastTimeVideoPlayedAt = time;
-	}
-	TimeMs lastTimeVideoPlayedAt() const {
-		return _lastTimeVideoPlayedAt;
-	}
 	void setSoundOverride(const QString &key, const QString &path) {
 		_variables.soundOverrides.insert(key, path);
 	}
@@ -193,6 +191,22 @@ public:
 	const Data::AutoDownload::Full &autoDownload() const {
 		return _variables.autoDownload;
 	}
+
+	void setArchiveCollapsed(bool collapsed);
+	bool archiveCollapsed() const;
+	rpl::producer<bool> archiveCollapsedChanges() const;
+
+	void setArchiveInMainMenu(bool inMainMenu);
+	bool archiveInMainMenu() const;
+	rpl::producer<bool> archiveInMainMenuChanges() const;
+
+	void setNotifyAboutPinned(bool notify);
+	bool notifyAboutPinned() const;
+	rpl::producer<bool> notifyAboutPinnedChanges() const;
+
+	void setSkipArchiveInSearch(bool skip);
+	bool skipArchiveInSearch() const;
+	rpl::producer<bool> skipArchiveInSearchChanges() const;
 
 	bool hadLegacyCallsPeerToPeerNobody() const {
 		return _variables.hadLegacyCallsPeerToPeerNobody;
@@ -246,6 +260,10 @@ private:
 		bool countUnreadMessages = true;
 		bool exeLaunchWarning = true;
 		Data::AutoDownload::Full autoDownload;
+		rpl::variable<bool> archiveCollapsed = false;
+		rpl::variable<bool> archiveInMainMenu = false;
+		rpl::variable<bool> notifyAboutPinned = true;
+		rpl::variable<bool> skipArchiveInSearch = false;
 
 		static constexpr auto kDefaultSupportChatsLimitSlice
 			= 7 * 24 * 60 * 60;
@@ -263,7 +281,6 @@ private:
 	rpl::event_stream<bool> _tabbedReplacedWithInfoValue;
 
 	Variables _variables;
-	TimeMs _lastTimeVideoPlayedAt = 0;
 
 };
 
@@ -274,12 +291,15 @@ class AuthSession final
 	: public base::has_weak_ptr
 	, private base::Subscriber {
 public:
-	AuthSession(const MTPUser &user);
+	AuthSession(not_null<Main::Account*> account, const MTPUser &user);
+	~AuthSession();
 
 	AuthSession(const AuthSession &other) = delete;
 	AuthSession &operator=(const AuthSession &other) = delete;
 
 	static bool Exists();
+
+	Main::Account &account() const;
 
 	UserId userId() const;
 	PeerId userPeerId() const;
@@ -311,7 +331,7 @@ public:
 		return _settings;
 	}
 	void moveSettingsFrom(AuthSessionSettings &&other);
-	void saveSettingsDelayed(TimeMs delay = kDefaultSaveDelay);
+	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
 
 	ApiWrap &api() {
 		return *_api;
@@ -322,7 +342,9 @@ public:
 	}
 
 	void checkAutoLock();
-	void checkAutoLockIn(TimeMs time);
+	void checkAutoLockIn(crl::time time);
+	void localPasscodeChanged();
+	void termsDeleteNow();
 
 	rpl::lifetime &lifetime() {
 		return _lifetime;
@@ -335,15 +357,15 @@ public:
 	Support::Helper &supportHelper() const;
 	Support::Templates &supportTemplates() const;
 
-	~AuthSession();
-
 private:
-	static constexpr auto kDefaultSaveDelay = TimeMs(1000);
+	static constexpr auto kDefaultSaveDelay = crl::time(1000);
+
+	const not_null<Main::Account*> _account;
 
 	AuthSessionSettings _settings;
 	base::Timer _saveDataTimer;
 
-	TimeMs _shouldLockAt = 0;
+	crl::time _shouldLockAt = 0;
 	base::Timer _autoLockTimer;
 
 	const std::unique_ptr<ApiWrap> _api;

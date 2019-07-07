@@ -9,7 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "platform/mac/specific_mac_p.h"
 
-class LocationCoords;
+namespace Data {
+class LocationPoint;
+} // namespace Data
 
 namespace Platform {
 
@@ -50,10 +52,6 @@ void psWriteDump();
 
 void psDeleteDir(const QString &dir);
 
-void psUserActionDone();
-bool psIdleSupported();
-TimeMs psIdleTime();
-
 QStringList psInitLogs();
 void psClearInitLogs();
 
@@ -71,8 +69,6 @@ int psCleanup();
 int psFixPrevious();
 
 bool psShowOpenWithMenu(int x, int y, const QString &file);
-
-QAbstractNativeEventFilter *psNativeEventFilter();
 
 void psNewVersion();
 
@@ -114,4 +110,4 @@ QString strStyleOfInterface();
 QString strTitleWrapClass();
 QString strTitleClass();
 
-bool psLaunchMaps(const LocationCoords &coords);
+bool psLaunchMaps(const Data::LocationPoint &point);

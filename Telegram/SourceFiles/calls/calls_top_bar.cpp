@@ -25,7 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Calls {
 namespace {
 
-constexpr auto kUpdateDebugTimeoutMs = TimeMs(500);
+constexpr auto kUpdateDebugTimeoutMs = crl::time(500);
 
 class DebugInfoBox : public BoxContent {
 public:
@@ -48,9 +48,9 @@ DebugInfoBox::DebugInfoBox(QWidget*, base::weak_ptr<Call> call)
 }
 
 void DebugInfoBox::prepare() {
-	setTitle([] { return QString("Call Debug"); });
+	setTitle(rpl::single(qsl("Call Debug")));
 
-	addButton(langFactory(lng_close), [this] { closeBox(); });
+	addButton(tr::lng_close(), [this] { closeBox(); });
 	_text = setInnerWidget(
 		object_ptr<Ui::PaddingWrap<Ui::FlatLabel>>(
 			this,
@@ -80,7 +80,7 @@ TopBar::TopBar(
 , _signalBars(this, _call.get(), st::callBarSignalBars)
 , _fullInfoLabel(this, st::callBarInfoLabel)
 , _shortInfoLabel(this, st::callBarInfoLabel)
-, _hangupLabel(this, st::callBarLabel, lang(lng_call_bar_hangup).toUpper())
+, _hangupLabel(this, st::callBarLabel, tr::lng_call_bar_hangup(tr::now).toUpper())
 , _mute(this, st::callBarMuteToggle)
 , _info(this)
 , _hangup(this, st::callBarHangup) {
@@ -162,7 +162,7 @@ void TopBar::updateDurationText() {
 	}
 }
 
-void TopBar::startDurationUpdateTimer(TimeMs currentDuration) {
+void TopBar::startDurationUpdateTimer(crl::time currentDuration) {
 	auto msTillNextSecond = 1000 - (currentDuration % 1000);
 	_updateDurationTimer.callOnce(msTillNextSecond + 5);
 }

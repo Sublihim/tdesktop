@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "history/admin_log/history_admin_log_inner.h"
 #include "history/view/history_view_element.h"
+#include "history/history_location_manager.h"
 #include "history/history_service.h"
 #include "history/history_message.h"
 #include "history/history.h"
@@ -16,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "lang/lang_keys.h"
+#include "ui/text/text_utilities.h"
 #include "boxes/sticker_set_box.h"
 #include "core/application.h"
 #include "auth_session.h"
@@ -28,7 +30,10 @@ TextWithEntities PrepareText(const QString &value, const QString &emptyValue) {
 	if (result.text.isEmpty()) {
 		result.text = emptyValue;
 		if (!emptyValue.isEmpty()) {
-			result.entities.push_back(EntityInText(EntityInTextItalic, 0, emptyValue.size()));
+			result.entities.push_back({
+				EntityType::Italic,
+				0,
+				emptyValue.size() });
 		}
 	} else {
 		TextUtilities::ParseEntities(result, TextParseLinks | TextParseMentions | TextParseHashtags | TextParseBotCommands);
@@ -103,46 +108,12 @@ TextWithEntities ExtractEditedText(const MTPMessage &message) {
 	return { text, entities };
 }
 
-PhotoData *GenerateChatPhoto(
-		ChannelId channelId,
-		uint64 logEntryId,
-		TimeId date,
-		const MTPDchatPhoto &photo) {
-	// We try to make a unique photoId that will stay the same for each pair (channelId, logEntryId).
-	static const auto RandomIdPart = rand_value<uint64>();
-	auto mixinIdPart = (static_cast<uint64>(static_cast<uint32>(channelId)) << 32) ^ logEntryId;
-	auto photoId = RandomIdPart ^ mixinIdPart;
-
-	const auto fileReference = [&]() -> const MTPbytes * {
-		const auto takeFrom = [](const MTPFileLocation &location) {
-			return (location.type() == mtpc_fileLocation)
-				? &location.c_fileLocation().vfile_reference
-				: nullptr;
-		};
-		if (const auto result = takeFrom(photo.vphoto_big)) {
-			return result;
-		}
-		return takeFrom(photo.vphoto_small);
-	}();
-	auto photoSizes = QVector<MTPPhotoSize>();
-	photoSizes.reserve(2);
-	photoSizes.push_back(MTP_photoSize(MTP_string("a"), photo.vphoto_small, MTP_int(160), MTP_int(160), MTP_int(0)));
-	photoSizes.push_back(MTP_photoSize(MTP_string("c"), photo.vphoto_big, MTP_int(640), MTP_int(640), MTP_int(0)));
-	return Auth().data().processPhoto(MTP_photo(
-		MTP_flags(0),
-		MTP_long(photoId),
-		MTP_long(0),
-		fileReference ? (*fileReference) : MTP_bytes(QByteArray()),
-		MTP_int(date),
-		MTP_vector<MTPPhotoSize>(photoSizes)));
-}
-
 const auto CollectChanges = [](auto &phraseMap, auto plusFlags, auto minusFlags) {
 	auto withPrefix = [&phraseMap](auto flags, QChar prefix) {
 		auto result = QString();
 		for (auto &phrase : phraseMap) {
 			if (flags & phrase.first) {
-				result.append('\n' + (prefix + lang(phrase.second)));
+				result.append('\n' + (prefix + phrase.second(tr::now)));
 			}
 		}
 		return result;
@@ -164,19 +135,21 @@ TextWithEntities GenerateAdminChangeText(
 
 	auto newFlags = newRights ? newRights->c_chatAdminRights().vflags.v : MTPDchatAdminRights::Flags(0);
 	auto prevFlags = prevRights ? prevRights->c_chatAdminRights().vflags.v : MTPDchatAdminRights::Flags(0);
-	auto result = lng_admin_log_promoted__generic(lt_user, user);
+	auto result = tr::lng_admin_log_promoted(tr::now, lt_user, user, Ui::Text::WithEntities);
 
 	auto useInviteLinkPhrase = channel->isMegagroup() && channel->anyoneCanAddMembers();
-	auto invitePhrase = (useInviteLinkPhrase ? lng_admin_log_admin_invite_link : lng_admin_log_admin_invite_users);
-	static auto phraseMap = std::map<Flags, LangKey> {
-		{ Flag::f_change_info, lng_admin_log_admin_change_info },
-		{ Flag::f_post_messages, lng_admin_log_admin_post_messages },
-		{ Flag::f_edit_messages, lng_admin_log_admin_edit_messages },
-		{ Flag::f_delete_messages, lng_admin_log_admin_delete_messages },
-		{ Flag::f_ban_users, lng_admin_log_admin_ban_users },
+	auto invitePhrase = useInviteLinkPhrase
+		? tr::lng_admin_log_admin_invite_link
+		: tr::lng_admin_log_admin_invite_users;
+	static auto phraseMap = std::map<Flags, tr::phrase<>> {
+		{ Flag::f_change_info, tr::lng_admin_log_admin_change_info },
+		{ Flag::f_post_messages, tr::lng_admin_log_admin_post_messages },
+		{ Flag::f_edit_messages, tr::lng_admin_log_admin_edit_messages },
+		{ Flag::f_delete_messages, tr::lng_admin_log_admin_delete_messages },
+		{ Flag::f_ban_users, tr::lng_admin_log_admin_ban_users },
 		{ Flag::f_invite_users, invitePhrase },
-		{ Flag::f_pin_messages, lng_admin_log_admin_pin_messages },
-		{ Flag::f_add_admins, lng_admin_log_admin_add_admins },
+		{ Flag::f_pin_messages, tr::lng_admin_log_admin_pin_messages },
+		{ Flag::f_add_admins, tr::lng_admin_log_admin_add_admins },
 	};
 	phraseMap[Flag::f_invite_users] = invitePhrase;
 
@@ -205,16 +178,16 @@ QString GenerateBannedChangeText(
 
 	auto newFlags = newRights ? newRights->c_chatBannedRights().vflags.v : Flags(0);
 	auto prevFlags = prevRights ? prevRights->c_chatBannedRights().vflags.v : Flags(0);
-	static auto phraseMap = std::map<Flags, LangKey>{
-		{ Flag::f_view_messages, lng_admin_log_banned_view_messages },
-		{ Flag::f_send_messages, lng_admin_log_banned_send_messages },
-		{ Flag::f_send_media, lng_admin_log_banned_send_media },
-		{ Flag::f_send_stickers | Flag::f_send_gifs | Flag::f_send_inline | Flag::f_send_games, lng_admin_log_banned_send_stickers },
-		{ Flag::f_embed_links, lng_admin_log_banned_embed_links },
-		{ Flag::f_send_polls, lng_admin_log_banned_send_polls },
-		{ Flag::f_change_info, lng_admin_log_admin_change_info },
-		{ Flag::f_invite_users, lng_admin_log_admin_invite_users },
-		{ Flag::f_pin_messages, lng_admin_log_admin_pin_messages },
+	static auto phraseMap = std::map<Flags, tr::phrase<>>{
+		{ Flag::f_view_messages, tr::lng_admin_log_banned_view_messages },
+		{ Flag::f_send_messages, tr::lng_admin_log_banned_send_messages },
+		{ Flag::f_send_media, tr::lng_admin_log_banned_send_media },
+		{ Flag::f_send_stickers | Flag::f_send_gifs | Flag::f_send_inline | Flag::f_send_games, tr::lng_admin_log_banned_send_stickers },
+		{ Flag::f_embed_links, tr::lng_admin_log_banned_embed_links },
+		{ Flag::f_send_polls, tr::lng_admin_log_banned_send_polls },
+		{ Flag::f_change_info, tr::lng_admin_log_admin_change_info },
+		{ Flag::f_invite_users, tr::lng_admin_log_admin_invite_users },
+		{ Flag::f_pin_messages, tr::lng_admin_log_admin_pin_messages },
 	};
 	return CollectChanges(phraseMap, prevFlags, newFlags);
 }
@@ -232,18 +205,21 @@ TextWithEntities GenerateBannedChangeText(
 	auto newUntil = newRights ? newRights->c_chatBannedRights().vuntil_date.v : TimeId(0);
 	auto indefinitely = ChannelData::IsRestrictedForever(newUntil);
 	if (newFlags & Flag::f_view_messages) {
-		return lng_admin_log_banned__generic(lt_user, user);
+		return tr::lng_admin_log_banned(tr::now, lt_user, user, Ui::Text::WithEntities);
 	}
 	auto untilText = indefinitely
-		? lang(lng_admin_log_restricted_forever)
-		: lng_admin_log_restricted_until(
+		? tr::lng_admin_log_restricted_forever(tr::now)
+		: tr::lng_admin_log_restricted_until(
+			tr::now,
 			lt_date,
 			langDateTime(ParseDateTime(newUntil)));
-	auto result = lng_admin_log_restricted__generic(
+	auto result = tr::lng_admin_log_restricted(
+		tr::now,
 		lt_user,
 		user,
 		lt_until,
-		TextWithEntities { untilText });
+		TextWithEntities { untilText },
+		Ui::Text::WithEntities);
 	const auto changes = GenerateBannedChangeText(newRights, prevRights);
 	if (!changes.isEmpty()) {
 		result.text.append('\n' + changes);
@@ -258,18 +234,27 @@ auto GenerateUserString(MTPint userId) {
 	auto entityData = QString::number(user->id)
 		+ '.'
 		+ QString::number(user->accessHash());
-	name.entities.push_back(EntityInText(
-		EntityInTextMentionName,
+	name.entities.push_back({
+		EntityType::MentionName,
 		0,
 		name.text.size(),
-		entityData));
+		entityData });
 	auto username = user->userName();
 	if (username.isEmpty()) {
 		return name;
 	}
 	auto mention = TextWithEntities { '@' + username };
-	mention.entities.push_back(EntityInText(EntityInTextMention, 0, mention.text.size()));
-	return lng_admin_log_user_with_username__generic(lt_name, name, lt_mention, mention);
+	mention.entities.push_back({
+		EntityType::Mention,
+		0,
+		mention.text.size() });
+	return tr::lng_admin_log_user_with_username(
+		tr::now,
+		lt_name,
+		name,
+		lt_mention,
+		mention,
+		Ui::Text::WithEntities);
 }
 
 auto GenerateParticipantChangeTextInner(
@@ -279,9 +264,11 @@ auto GenerateParticipantChangeTextInner(
 	const auto oldType = oldParticipant ? oldParticipant->type() : 0;
 	return participant.match([&](const MTPDchannelParticipantCreator &data) {
 		// No valid string here :(
-		return lng_admin_log_invited__generic(
+		return tr::lng_admin_log_transferred(
+			tr::now,
 			lt_user,
-			GenerateUserString(data.vuser_id));
+			GenerateUserString(data.vuser_id),
+			Ui::Text::WithEntities);
 	}, [&](const MTPDchannelParticipantAdmin &data) {
 		auto user = GenerateUserString(data.vuser_id);
 		return GenerateAdminChangeText(
@@ -313,23 +300,23 @@ auto GenerateParticipantChangeTextInner(
 				nullptr,
 				&oldParticipant->c_channelParticipantBanned().vbanned_rights);
 		}
-		return lng_admin_log_invited__generic(lt_user, user);
+		return tr::lng_admin_log_invited(tr::now, lt_user, user, Ui::Text::WithEntities);
 	});
 }
 
 TextWithEntities GenerateParticipantChangeText(not_null<ChannelData*> channel, const MTPChannelParticipant &participant, const MTPChannelParticipant *oldParticipant = nullptr) {
 	auto result = GenerateParticipantChangeTextInner(channel, participant, oldParticipant);
-	result.entities.push_front(EntityInText(EntityInTextItalic, 0, result.text.size()));
+	result.entities.push_front(EntityInText(EntityType::Italic, 0, result.text.size()));
 	return result;
 }
 
 TextWithEntities GenerateDefaultBannedRightsChangeText(not_null<ChannelData*> channel, const MTPChatBannedRights &rights, const MTPChatBannedRights &oldRights) {
-	auto result = TextWithEntities{ lang(lng_admin_log_changed_default_permissions) };
+	auto result = TextWithEntities{ tr::lng_admin_log_changed_default_permissions(tr::now) };
 	const auto changes = GenerateBannedChangeText(&rights, &oldRights);
 	if (!changes.isEmpty()) {
 		result.text.append('\n' + changes);
 	}
-	result.entities.push_front(EntityInText(EntityInTextItalic, 0, result.text.size()));
+	result.entities.push_front(EntityInText(EntityType::Italic, 0, result.text.size()));
 	return result;
 }
 
@@ -393,11 +380,18 @@ void GenerateItems(
 	auto addSimpleServiceMessage = [&](const QString &text, PhotoData *photo = nullptr) {
 		auto message = HistoryService::PreparedText { text };
 		message.links.push_back(fromLink);
-		addPart(new HistoryService(history, idManager->next(), date, message, 0, peerToUser(from->id), photo));
+		addPart(history->owner().makeServiceMessage(history, idManager->next(), date, message, MTPDmessage::Flags(0), peerToUser(from->id), photo));
 	};
 
 	auto createChangeTitle = [&](const MTPDchannelAdminLogEventActionChangeTitle &action) {
-		auto text = (channel->isMegagroup() ? lng_action_changed_title : lng_admin_log_changed_title_channel)(lt_from, fromLinkText, lt_title, qs(action.vnew_value));
+		auto text = (channel->isMegagroup()
+			? tr::lng_action_changed_title
+			: tr::lng_admin_log_changed_title_channel)(
+				tr::now,
+				lt_from,
+				fromLinkText,
+				lt_title,
+				qs(action.vnew_value));
 		addSimpleServiceMessage(text);
 	};
 
@@ -405,19 +399,23 @@ void GenerateItems(
 		auto newValue = qs(action.vnew_value);
 		auto oldValue = qs(action.vprev_value);
 		auto text = (channel->isMegagroup()
-			? (newValue.isEmpty() ? lng_admin_log_removed_description_group : lng_admin_log_changed_description_group)
-			: (newValue.isEmpty() ? lng_admin_log_removed_description_channel : lng_admin_log_changed_description_channel)
-			)(lt_from, fromLinkText);
+			? (newValue.isEmpty()
+				? tr::lng_admin_log_removed_description_group
+				: tr::lng_admin_log_changed_description_group)
+			: (newValue.isEmpty()
+				? tr::lng_admin_log_removed_description_channel
+				: tr::lng_admin_log_changed_description_channel)
+			)(tr::now, lt_from, fromLinkText);
 		addSimpleServiceMessage(text);
 
 		auto bodyFlags = Flag::f_entities | Flag::f_from_id;
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto newDescription = PrepareText(newValue, QString());
-		auto body = new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), newDescription);
+		auto body = history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), newDescription);
 		if (!oldValue.isEmpty()) {
 			auto oldDescription = PrepareText(oldValue, QString());
-			body->addLogEntryOriginal(id, lang(lng_admin_log_previous_description), oldDescription);
+			body->addLogEntryOriginal(id, tr::lng_admin_log_previous_description(tr::now), oldDescription);
 		}
 		addPart(body);
 	};
@@ -426,60 +424,70 @@ void GenerateItems(
 		auto newValue = qs(action.vnew_value);
 		auto oldValue = qs(action.vprev_value);
 		auto text = (channel->isMegagroup()
-			? (newValue.isEmpty() ? lng_admin_log_removed_link_group : lng_admin_log_changed_link_group)
-			: (newValue.isEmpty() ? lng_admin_log_removed_link_channel : lng_admin_log_changed_link_channel)
-			)(lt_from, fromLinkText);
+			? (newValue.isEmpty()
+				? tr::lng_admin_log_removed_link_group
+				: tr::lng_admin_log_changed_link_group)
+			: (newValue.isEmpty()
+				? tr::lng_admin_log_removed_link_channel
+				: tr::lng_admin_log_changed_link_channel)
+			)(tr::now, lt_from, fromLinkText);
 		addSimpleServiceMessage(text);
 
 		auto bodyFlags = Flag::f_entities | Flag::f_from_id;
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto newLink = newValue.isEmpty() ? TextWithEntities() : PrepareText(Core::App().createInternalLinkFull(newValue), QString());
-		auto body = new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), newLink);
+		auto body = history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), newLink);
 		if (!oldValue.isEmpty()) {
 			auto oldLink = PrepareText(Core::App().createInternalLinkFull(oldValue), QString());
-			body->addLogEntryOriginal(id, lang(lng_admin_log_previous_link), oldLink);
+			body->addLogEntryOriginal(id, tr::lng_admin_log_previous_link(tr::now), oldLink);
 		}
 		addPart(body);
 	};
 
 	auto createChangePhoto = [&](const MTPDchannelAdminLogEventActionChangePhoto &action) {
-		switch (action.vnew_photo.type()) {
-		case mtpc_chatPhoto: {
-			auto photo = GenerateChatPhoto(channel->bareId(), id, date, action.vnew_photo.c_chatPhoto());
-			auto text = (channel->isMegagroup() ? lng_admin_log_changed_photo_group : lng_admin_log_changed_photo_channel)(lt_from, fromLinkText);
+		action.vnew_photo.match([&](const MTPDphoto &data) {
+			auto photo = Auth().data().processPhoto(data);
+			auto text = (channel->isMegagroup()
+				? tr::lng_admin_log_changed_photo_group
+				: tr::lng_admin_log_changed_photo_channel)(
+					tr::now,
+					lt_from,
+					fromLinkText);
 			addSimpleServiceMessage(text, photo);
-		} break;
-		case mtpc_chatPhotoEmpty: {
-			auto text = (channel->isMegagroup() ? lng_admin_log_removed_photo_group : lng_admin_log_removed_photo_channel)(lt_from, fromLinkText);
+		}, [&](const MTPDphotoEmpty &data) {
+			auto text = (channel->isMegagroup()
+				? tr::lng_admin_log_removed_photo_group
+				: tr::lng_admin_log_removed_photo_channel)(
+					tr::now,
+					lt_from,
+					fromLinkText);
 			addSimpleServiceMessage(text);
-		} break;
-		default: Unexpected("ChatPhoto type in createChangePhoto()");
-		}
+		});
 	};
 
 	auto createToggleInvites = [&](const MTPDchannelAdminLogEventActionToggleInvites &action) {
 		auto enabled = (action.vnew_value.type() == mtpc_boolTrue);
 		auto text = (enabled
-			? lng_admin_log_invites_enabled
-			: lng_admin_log_invites_disabled);
-		addSimpleServiceMessage(text(lt_from, fromLinkText));
+			? tr::lng_admin_log_invites_enabled
+			: tr::lng_admin_log_invites_disabled);
+		addSimpleServiceMessage(text(tr::now, lt_from, fromLinkText));
 	};
 
 	auto createToggleSignatures = [&](const MTPDchannelAdminLogEventActionToggleSignatures &action) {
 		auto enabled = (action.vnew_value.type() == mtpc_boolTrue);
 		auto text = (enabled
-			? lng_admin_log_signatures_enabled
-			: lng_admin_log_signatures_disabled);
-		addSimpleServiceMessage(text(lt_from, fromLinkText));
+			? tr::lng_admin_log_signatures_enabled
+			: tr::lng_admin_log_signatures_disabled);
+		addSimpleServiceMessage(text(tr::now, lt_from, fromLinkText));
 	};
 
 	auto createUpdatePinned = [&](const MTPDchannelAdminLogEventActionUpdatePinned &action) {
 		if (action.vmessage.type() == mtpc_messageEmpty) {
-			auto text = lng_admin_log_unpinned_message(lt_from, fromLinkText);
+			auto text = tr::lng_admin_log_unpinned_message(tr::now, lt_from, fromLinkText);
 			addSimpleServiceMessage(text);
 		} else {
-			auto text = lng_admin_log_pinned_message(lt_from, fromLinkText);
+			auto text = tr::lng_admin_log_pinned_message(tr::now, lt_from, fromLinkText);
 			addSimpleServiceMessage(text);
 
 			auto detachExistingItem = false;
@@ -495,10 +503,14 @@ void GenerateItems(
 	auto createEditMessage = [&](const MTPDchannelAdminLogEventActionEditMessage &action) {
 		auto newValue = ExtractEditedText(action.vnew_message);
 		auto canHaveCaption = MediaCanHaveCaption(action.vnew_message);
-		auto text = (canHaveCaption
-			? (newValue.text.isEmpty() ? lng_admin_log_removed_caption : lng_admin_log_edited_caption)
-			: lng_admin_log_edited_message
-			)(lt_from, fromLinkText);
+		auto text = (!canHaveCaption
+			? tr::lng_admin_log_edited_message
+			: newValue.text.isEmpty()
+			? tr::lng_admin_log_removed_caption
+			: tr::lng_admin_log_edited_caption)(
+				tr::now,
+				lt_from,
+				fromLinkText);
 		addSimpleServiceMessage(text);
 
 		auto oldValue = ExtractEditedText(action.vprev_message);
@@ -510,14 +522,20 @@ void GenerateItems(
 				date),
 			detachExistingItem);
 		if (oldValue.text.isEmpty()) {
-			oldValue = PrepareText(QString(), lang(lng_admin_log_empty_text));
+			oldValue = PrepareText(QString(), tr::lng_admin_log_empty_text(tr::now));
 		}
-		body->addLogEntryOriginal(id, lang(canHaveCaption ? lng_admin_log_previous_caption : lng_admin_log_previous_message), oldValue);
+
+		body->addLogEntryOriginal(
+			id,
+			(canHaveCaption
+				? tr::lng_admin_log_previous_caption
+				: tr::lng_admin_log_previous_message)(tr::now),
+			oldValue);
 		addPart(body);
 	};
 
 	auto createDeleteMessage = [&](const MTPDchannelAdminLogEventActionDeleteMessage &action) {
-		auto text = lng_admin_log_deleted_message(lt_from, fromLinkText);
+		auto text = tr::lng_admin_log_deleted_message(tr::now, lt_from, fromLinkText);
 		addSimpleServiceMessage(text);
 
 		auto detachExistingItem = false;
@@ -528,16 +546,16 @@ void GenerateItems(
 
 	auto createParticipantJoin = [&]() {
 		auto text = (channel->isMegagroup()
-			? lng_admin_log_participant_joined
-			: lng_admin_log_participant_joined_channel);
-		addSimpleServiceMessage(text(lt_from, fromLinkText));
+			? tr::lng_admin_log_participant_joined
+			: tr::lng_admin_log_participant_joined_channel);
+		addSimpleServiceMessage(text(tr::now, lt_from, fromLinkText));
 	};
 
 	auto createParticipantLeave = [&]() {
 		auto text = (channel->isMegagroup()
-			? lng_admin_log_participant_left
-			: lng_admin_log_participant_left_channel);
-		addSimpleServiceMessage(text(lt_from, fromLinkText));
+			? tr::lng_admin_log_participant_left
+			: tr::lng_admin_log_participant_left_channel);
+		addSimpleServiceMessage(text(tr::now, lt_from, fromLinkText));
 	};
 
 	auto createParticipantInvite = [&](const MTPDchannelAdminLogEventActionParticipantInvite &action) {
@@ -545,7 +563,7 @@ void GenerateItems(
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto bodyText = GenerateParticipantChangeText(channel, action.vparticipant);
-		addPart(new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
+		addPart(history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
 	};
 
 	auto createParticipantToggleBan = [&](const MTPDchannelAdminLogEventActionParticipantToggleBan &action) {
@@ -553,45 +571,52 @@ void GenerateItems(
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto bodyText = GenerateParticipantChangeText(channel, action.vnew_participant, &action.vprev_participant);
-		addPart(new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
+		addPart(history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
 	};
 
 	auto createParticipantToggleAdmin = [&](const MTPDchannelAdminLogEventActionParticipantToggleAdmin &action) {
+		if (action.vnew_participant.type() == mtpc_channelParticipantAdmin
+			&& action.vprev_participant.type() == mtpc_channelParticipantCreator) {
+			// In case of ownership transfer we show that message in
+			// the "User > Creator" part and skip the "Creator > Admin" part.
+			return;
+		}
 		auto bodyFlags = Flag::f_entities | Flag::f_from_id;
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto bodyText = GenerateParticipantChangeText(channel, action.vnew_participant, &action.vprev_participant);
-		addPart(new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
+		addPart(history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
 	};
 
 	auto createChangeStickerSet = [&](const MTPDchannelAdminLogEventActionChangeStickerSet &action) {
 		auto set = action.vnew_stickerset;
 		auto removed = (set.type() == mtpc_inputStickerSetEmpty);
 		if (removed) {
-			auto text = lng_admin_log_removed_stickers_group(lt_from, fromLinkText);
+			auto text = tr::lng_admin_log_removed_stickers_group(tr::now, lt_from, fromLinkText);
 			addSimpleServiceMessage(text);
 		} else {
-			auto text = lng_admin_log_changed_stickers_group(
+			auto text = tr::lng_admin_log_changed_stickers_group(
+				tr::now,
 				lt_from,
 				fromLinkText,
 				lt_sticker_set,
-				textcmdLink(2, lang(lng_admin_log_changed_stickers_set)));
+				textcmdLink(2, tr::lng_admin_log_changed_stickers_set(tr::now)));
 			auto setLink = std::make_shared<LambdaClickHandler>([set] {
 				Ui::show(Box<StickerSetBox>(set));
 			});
 			auto message = HistoryService::PreparedText { text };
 			message.links.push_back(fromLink);
 			message.links.push_back(setLink);
-			addPart(new HistoryService(history, idManager->next(), date, message, 0, peerToUser(from->id)));
+			addPart(history->owner().makeServiceMessage(history, idManager->next(), date, message, MTPDmessage::Flags(0), peerToUser(from->id)));
 		}
 	};
 
 	auto createTogglePreHistoryHidden = [&](const MTPDchannelAdminLogEventActionTogglePreHistoryHidden &action) {
 		auto hidden = (action.vnew_value.type() == mtpc_boolTrue);
 		auto text = (hidden
-			? lng_admin_log_history_made_hidden
-			: lng_admin_log_history_made_visible);
-		addSimpleServiceMessage(text(lt_from, fromLinkText));
+			? tr::lng_admin_log_history_made_hidden
+			: tr::lng_admin_log_history_made_visible);
+		addSimpleServiceMessage(text(tr::now, lt_from, fromLinkText));
 	};
 
 	auto createDefaultBannedRights = [&](const MTPDchannelAdminLogEventActionDefaultBannedRights &action) {
@@ -599,17 +624,71 @@ void GenerateItems(
 		auto bodyReplyTo = 0;
 		auto bodyViaBotId = 0;
 		auto bodyText = GenerateDefaultBannedRightsChangeText(channel, action.vnew_banned_rights, action.vprev_banned_rights);
-		addPart(new HistoryMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
+		addPart(history->owner().makeMessage(history, idManager->next(), bodyFlags, bodyReplyTo, bodyViaBotId, date, peerToUser(from->id), QString(), bodyText));
 	};
 
 	auto createStopPoll = [&](const MTPDchannelAdminLogEventActionStopPoll &action) {
-		auto text = lng_admin_log_stopped_poll(lt_from, fromLinkText);
+		auto text = tr::lng_admin_log_stopped_poll(tr::now, lt_from, fromLinkText);
 		addSimpleServiceMessage(text);
 
 		auto detachExistingItem = false;
 		addPart(history->createItem(
 			PrepareLogMessage(action.vmessage, idManager->next(), date),
 			detachExistingItem));
+	};
+
+	auto createChangeLinkedChat = [&](const MTPDchannelAdminLogEventActionChangeLinkedChat &action) {
+		const auto broadcast = channel->isBroadcast();
+		const auto was = history->owner().channelLoaded(action.vprev_value.v);
+		const auto now = history->owner().channelLoaded(action.vnew_value.v);
+		if (!now) {
+			auto text = (broadcast
+				? tr::lng_admin_log_removed_linked_chat
+				: tr::lng_admin_log_removed_linked_channel)(
+					tr::now,
+					lt_from,
+					fromLinkText);
+			addSimpleServiceMessage(text);
+		} else {
+			auto text = (broadcast
+				? tr::lng_admin_log_changed_linked_chat
+				: tr::lng_admin_log_changed_linked_channel)(
+					tr::now,
+					lt_from,
+					fromLinkText,
+					lt_chat,
+					textcmdLink(2, now->name));
+			auto chatLink = std::make_shared<LambdaClickHandler>([=] {
+				Ui::showPeerHistory(now, ShowAtUnreadMsgId);
+			});
+			auto message = HistoryService::PreparedText{ text };
+			message.links.push_back(fromLink);
+			message.links.push_back(chatLink);
+			addPart(history->owner().makeServiceMessage(history, idManager->next(), date, message, MTPDmessage::Flags(0), peerToUser(from->id)));
+		}
+	};
+
+	auto createChangeLocation = [&](const MTPDchannelAdminLogEventActionChangeLocation &action) {
+		action.vnew_value.match([&](const MTPDchannelLocation &data) {
+			const auto address = qs(data.vaddress);
+			const auto link = data.vgeo_point.match([&](const MTPDgeoPoint &data) {
+				return textcmdLink(
+					LocationClickHandler::Url(Data::LocationPoint(data)),
+					address);
+			}, [&](const MTPDgeoPointEmpty &) {
+				return address;
+			});
+			const auto text = tr::lng_admin_log_changed_location_chat(
+				tr::now,
+				lt_from,
+				fromLinkText,
+				lt_address,
+				link);
+			addSimpleServiceMessage(text);
+		}, [&](const MTPDchannelLocationEmpty &) {
+			const auto text = tr::lng_admin_log_removed_location_chat(tr::now, lt_from, fromLinkText);
+			addSimpleServiceMessage(text);
+		});
 	};
 
 	action.match([&](const MTPDchannelAdminLogEventActionChangeTitle &data) {
@@ -648,6 +727,10 @@ void GenerateItems(
 		createDefaultBannedRights(data);
 	}, [&](const MTPDchannelAdminLogEventActionStopPoll &data) {
 		createStopPoll(data);
+	}, [&](const MTPDchannelAdminLogEventActionChangeLinkedChat &data) {
+		createChangeLinkedChat(data);
+	}, [&](const MTPDchannelAdminLogEventActionChangeLocation &data) {
+		createChangeLocation(data);
 	});
 }
 

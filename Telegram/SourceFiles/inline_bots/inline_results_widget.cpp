@@ -27,7 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "mainwidget.h"
 #include "auth_session.h"
-#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/labels.h"
 #include "observer_peer.h"
@@ -42,7 +42,10 @@ constexpr auto kInlineBotRequestDelay = 400;
 
 } // namespace
 
-Inner::Inner(QWidget *parent, not_null<Window::Controller*> controller) : TWidget(parent)
+Inner::Inner(
+	QWidget *parent,
+	not_null<Window::SessionController*> controller)
+: TWidget(parent)
 , _controller(controller)
 , _updateInlineItems([=] { updateInlineItems(); })
 , _previewTimer([=] { showPreview(); }) {
@@ -76,18 +79,18 @@ void Inner::visibleTopBottomUpdated(
 	_visibleBottom = visibleBottom;
 	if (_visibleTop != visibleTop) {
 		_visibleTop = visibleTop;
-		_lastScrolled = getms();
+		_lastScrolled = crl::now();
 	}
 }
 
 void Inner::checkRestrictedPeer() {
 	if (_inlineQueryPeer) {
-		const auto errorKey = Data::RestrictionErrorKey(
+		const auto error = Data::RestrictionError(
 			_inlineQueryPeer,
 			ChatRestriction::f_send_inline);
-		if (errorKey) {
+		if (error) {
 			if (!_restrictedLabel) {
-				_restrictedLabel.create(this, lang(*errorKey), Ui::FlatLabel::InitType::Simple, st::stickersRestrictedLabel);
+				_restrictedLabel.create(this, *error, st::stickersRestrictedLabel);
 				_restrictedLabel->show();
 				_restrictedLabel->move(st::inlineResultsLeft - st::buttonRadius, st::stickerPanPadding);
 				if (_switchPmButton) {
@@ -148,11 +151,11 @@ void Inner::paintInlineItems(Painter &p, const QRect &r) {
 	if (_rows.isEmpty() && !_switchPmButton) {
 		p.setFont(st::normalFont);
 		p.setPen(st::noContactsColor);
-		p.drawText(QRect(0, 0, width(), (height() / 3) * 2 + st::normalFont->height), lang(lng_inline_bot_no_results), style::al_center);
+		p.drawText(QRect(0, 0, width(), (height() / 3) * 2 + st::normalFont->height), tr::lng_inline_bot_no_results(tr::now), style::al_center);
 		return;
 	}
 	auto gifPaused = _controller->isGifPausedAtLeastFor(Window::GifPauseReason::InlineResults);
-	InlineBots::Layout::PaintContext context(getms(), false, gifPaused, false);
+	InlineBots::Layout::PaintContext context(crl::now(), false, gifPaused, false);
 
 	auto top = st::stickerPanPadding;
 	if (_switchPmButton) {
@@ -425,15 +428,14 @@ void Inner::refreshSwitchPmButton(const CacheEntry *entry) {
 		_switchPmStartToken.clear();
 	} else {
 		if (!_switchPmButton) {
-			_switchPmButton.create(this, Fn<QString()>(), st::switchPmButton);
+			_switchPmButton.create(this, nullptr, st::switchPmButton);
 			_switchPmButton->show();
 			_switchPmButton->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
 			connect(_switchPmButton, SIGNAL(clicked()), this, SLOT(onSwitchPm()));
 		}
-		auto text = entry->switchPmText;
-		_switchPmButton->setText([text] { return text; }); // doesn't perform text.toUpper()
+		_switchPmButton->setText(rpl::single(entry->switchPmText));
 		_switchPmStartToken = entry->switchPmStartToken;
-		auto buttonTop = st::stickerPanPadding;
+		const auto buttonTop = st::stickerPanPadding;
 		_switchPmButton->move(st::inlineResultsLeft - st::buttonRadius, buttonTop);
 		if (isRestrictedView()) {
 			_switchPmButton->hide();
@@ -570,7 +572,7 @@ void Inner::inlineItemLayoutChanged(const ItemBase *layout) {
 }
 
 void Inner::inlineItemRepaint(const ItemBase *layout) {
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + 100 <= ms) {
 		update();
 	} else {
@@ -701,7 +703,7 @@ void Inner::showPreview() {
 }
 
 void Inner::updateInlineItems() {
-	auto ms = getms();
+	auto ms = crl::now();
 	if (_lastScrolled + 100 <= ms) {
 		update();
 	} else {
@@ -718,7 +720,10 @@ void Inner::onSwitchPm() {
 
 } // namespace internal
 
-Widget::Widget(QWidget *parent, not_null<Window::Controller*> controller) : TWidget(parent)
+Widget::Widget(
+	QWidget *parent,
+	not_null<Window::SessionController*> controller)
+: RpWidget(parent)
 , _controller(controller)
 , _contentMaxHeight(st::emojiPanMaxHeight)
 , _contentHeight(_contentMaxHeight)
@@ -742,9 +747,12 @@ Widget::Widget(QWidget *parent, not_null<Window::Controller*> controller) : TWid
 	_inlineRequestTimer.setSingleShot(true);
 	connect(&_inlineRequestTimer, SIGNAL(timeout()), this, SLOT(onInlineRequest()));
 
-	if (cPlatform() == dbipMac || cPlatform() == dbipMacOld) {
-		connect(App::wnd()->windowHandle(), SIGNAL(activeChanged()), this, SLOT(onWndActiveChanged()));
-	}
+	macWindowDeactivateEvents(
+	) | rpl::filter([=] {
+		return !isHidden();
+	}) | rpl::start_with_next([=] {
+		leaveEvent(nullptr);
+	}, lifetime());
 
 	// Inner widget has OpaquePaintEvent attribute so it doesn't repaint on scroll.
 	// But we should force it to repaint so that GIFs will continue to animate without update() calls.
@@ -795,21 +803,12 @@ void Widget::updateContentHeight() {
 	update();
 }
 
-void Widget::onWndActiveChanged() {
-	if (!App::wnd()->windowHandle()->isActive() && !isHidden()) {
-		leaveEvent(0);
-	}
-}
-
 void Widget::paintEvent(QPaintEvent *e) {
 	Painter p(this);
 
-	auto ms = getms();
+	auto opacityAnimating = _a_opacity.animating();
 
-	// This call can finish _a_show animation and destroy _showAnimation.
-	auto opacityAnimating = _a_opacity.animating(ms);
-
-	auto showAnimating = _a_show.animating(ms);
+	auto showAnimating = _a_show.animating();
 	if (_showAnimation && !showAnimating) {
 		_showAnimation.reset();
 		if (!opacityAnimating) {
@@ -819,11 +818,11 @@ void Widget::paintEvent(QPaintEvent *e) {
 
 	if (showAnimating) {
 		Assert(_showAnimation != nullptr);
-		if (auto opacity = _a_opacity.current(_hiding ? 0. : 1.)) {
-			_showAnimation->paintFrame(p, 0, 0, width(), _a_show.current(1.), opacity);
+		if (auto opacity = _a_opacity.value(_hiding ? 0. : 1.)) {
+			_showAnimation->paintFrame(p, 0, 0, width(), _a_show.value(1.), opacity);
 		}
 	} else if (opacityAnimating) {
-		p.setOpacity(_a_opacity.current(_hiding ? 0. : 1.));
+		p.setOpacity(_a_opacity.value(_hiding ? 0. : 1.));
 		p.drawPixmap(0, 0, _cache);
 	} else if (_hiding || isHidden()) {
 		hideFinished();
@@ -853,7 +852,7 @@ void Widget::hideFast() {
 	if (isHidden()) return;
 
 	_hiding = false;
-	_a_opacity.finish();
+	_a_opacity.stop();
 	hideFinished();
 }
 
@@ -936,7 +935,7 @@ void Widget::hideFinished() {
 	_controller->disableGifPauseReason(Window::GifPauseReason::InlineResults);
 
 	_inner->hideFinish(true);
-	_a_show.finish();
+	_a_show.stop();
 	_showAnimation.reset();
 	_cache = QPixmap();
 	_horizontal = false;

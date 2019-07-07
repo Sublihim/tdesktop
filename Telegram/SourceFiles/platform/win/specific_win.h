@@ -7,9 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include <windows.h>
+#include "platform/win/wrapper_windows_h.h"
 
-class LocationCoords;
+namespace Data {
+class LocationPoint;
+} // namespace Data
 
 namespace Platform {
 
@@ -38,8 +40,7 @@ QString CurrentExecutablePath(int argc, char *argv[]);
 
 namespace ThirdParty {
 
-inline void start() {
-}
+void start();
 
 inline void finish() {
 }
@@ -57,10 +58,6 @@ void psWriteDump();
 
 void psDeleteDir(const QString &dir);
 
-void psUserActionDone();
-bool psIdleSupported();
-TimeMs psIdleTime();
-
 QStringList psInitLogs();
 void psClearInitLogs();
 
@@ -77,8 +74,6 @@ void psBringToBack(QWidget *w);
 
 int psCleanup();
 int psFixPrevious();
-
-QAbstractNativeEventFilter *psNativeEventFilter();
 
 void psNewVersion();
 
@@ -113,4 +108,4 @@ public:
 
 };
 
-bool psLaunchMaps(const LocationCoords &coords);
+bool psLaunchMaps(const Data::LocationPoint &point);

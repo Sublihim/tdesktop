@@ -14,13 +14,13 @@ public:
 	BotCommand(const QString &command, const QString &description);
 
 	bool setDescription(const QString &description);
-	const Text &descriptionText() const;
+	const Ui::Text::String &descriptionText() const;
 
 	QString command;
 
 private:
 	QString _description;
-	mutable Text _descriptionText;
+	mutable Ui::Text::String _descriptionText;
 
 };
 
@@ -31,7 +31,7 @@ struct BotInfo {
 	int version = 0;
 	QString description, inlinePlaceholder;
 	QList<BotCommand> commands;
-	Text text = Text{ int(st::msgMinWidth) }; // description
+	Ui::Text::String text = { int(st::msgMinWidth) }; // description
 
 	QString startToken, startGroupToken, shareGameShortName;
 	PeerId inlineReturnPeerId = 0;
@@ -48,6 +48,7 @@ public:
 		| MTPDuser::Flag::f_bot_chat_history
 		| MTPDuser::Flag::f_bot_nochats
 		| MTPDuser::Flag::f_verified
+		| MTPDuser::Flag::f_scam
 		| MTPDuser::Flag::f_restricted
 		| MTPDuser::Flag::f_bot_inline_geo;
 	using Flags = Data::Flags<
@@ -119,11 +120,17 @@ public:
 	bool isVerified() const {
 		return flags() & MTPDuser::Flag::f_verified;
 	}
+	bool isScam() const {
+		return flags() & MTPDuser::Flag::f_scam;
+	}
 	bool isBotInlineGeo() const {
 		return flags() & MTPDuser::Flag::f_bot_inline_geo;
 	}
 	bool isBot() const {
 		return botInfo != nullptr;
+	}
+	bool isSupport() const {
+		return flags() & MTPDuser::Flag::f_support;
 	}
 	bool isInaccessible() const {
 		constexpr auto inaccessible = 0
@@ -134,9 +141,6 @@ public:
 	bool canWrite() const {
 		// Duplicated in Data::CanWriteValue().
 		return !isInaccessible();
-	}
-	bool isContact() const {
-		return (_contactStatus == ContactStatus::Contact);
 	}
 
 	bool canShareThisContact() const;
@@ -160,18 +164,21 @@ public:
 		return _phone;
 	}
 	QString nameOrPhone;
-	Text phoneText;
+	Ui::Text::String phoneText;
 	TimeId onlineTill = 0;
 
 	enum class ContactStatus : char {
-		PhoneUnknown,
-		CanAdd,
+		Unknown,
 		Contact,
+		NotContact,
 	};
-	ContactStatus contactStatus() const {
+	[[nodiscard]] ContactStatus contactStatus() const {
 		return _contactStatus;
 	}
-	void setContactStatus(ContactStatus status);
+	[[nodiscard]] bool isContact() const {
+		return (contactStatus() == ContactStatus::Contact);
+	}
+	void setIsContact(bool is);
 
 	enum class BlockStatus : char {
 		Unknown,
@@ -184,7 +191,7 @@ public:
 	bool isBlocked() const {
 		return (blockStatus() == BlockStatus::Blocked);
 	}
-	void setBlockStatus(BlockStatus blockStatus);
+	void setIsBlocked(bool is);
 
 	enum class CallsStatus : char {
 		Unknown,
@@ -214,7 +221,7 @@ private:
 
 	QString _unavailableReason;
 	QString _phone;
-	ContactStatus _contactStatus = ContactStatus::PhoneUnknown;
+	ContactStatus _contactStatus = ContactStatus::Unknown;
 	BlockStatus _blockStatus = BlockStatus::Unknown;
 	CallsStatus _callsStatus = CallsStatus::Unknown;
 	int _commonChatsCount = 0;
@@ -224,3 +231,9 @@ private:
 		= 0xFFFFFFFFFFFFFFFFULL;
 
 };
+
+namespace Data {
+
+void ApplyUserUpdate(not_null<UserData*> user, const MTPDuserFull &update);
+
+} // namespace Data

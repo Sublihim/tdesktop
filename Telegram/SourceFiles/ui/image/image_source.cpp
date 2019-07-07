@@ -24,23 +24,18 @@ ImageSource::ImageSource(QImage &&data, const QByteArray &format)
 , _height(_data.height()) {
 }
 
-void ImageSource::load(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
+void ImageSource::load(Data::FileOrigin origin) {
 	if (_data.isNull() && !_bytes.isEmpty()) {
 		_data = App::readImage(_bytes, &_format, false);
 	}
 }
 
-void ImageSource::loadEvenCancelled(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
-	load(origin, loadFirst, prior);
+void ImageSource::loadEvenCancelled(Data::FileOrigin origin) {
+	load(origin);
 }
 
 QImage ImageSource::takeLoaded() {
+	load({});
 	return _data;
 }
 
@@ -59,8 +54,8 @@ void ImageSource::unload() {
 }
 
 void ImageSource::automaticLoad(
-	Data::FileOrigin origin,
-	const HistoryItem *item) {
+		Data::FileOrigin origin,
+		const HistoryItem *item) {
 }
 
 void ImageSource::automaticLoadSettingsChanged() {
@@ -86,7 +81,7 @@ int ImageSource::loadOffset() {
 }
 
 const StorageImageLocation &ImageSource::location() {
-	return StorageImageLocation::Null;
+	return StorageImageLocation::Invalid();
 }
 
 void ImageSource::refreshFileReference(const QByteArray &data) {
@@ -155,10 +150,7 @@ LocalFileSource::LocalFileSource(
 , _height(_data.height()) {
 }
 
-void LocalFileSource::load(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
+void LocalFileSource::load(Data::FileOrigin origin) {
 	if (!_data.isNull()) {
 		return;
 	}
@@ -178,11 +170,8 @@ void LocalFileSource::load(
 	_height = std::max(_data.height(), 1);
 }
 
-void LocalFileSource::loadEvenCancelled(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
-	load(origin, loadFirst, prior);
+void LocalFileSource::loadEvenCancelled(Data::FileOrigin origin) {
+	load(origin);
 }
 
 QImage LocalFileSource::takeLoaded() {
@@ -194,8 +183,8 @@ void LocalFileSource::unload() {
 }
 
 void LocalFileSource::automaticLoad(
-	Data::FileOrigin origin,
-	const HistoryItem *item) {
+		Data::FileOrigin origin,
+		const HistoryItem *item) {
 }
 
 void LocalFileSource::automaticLoadSettingsChanged() {
@@ -221,7 +210,7 @@ int LocalFileSource::loadOffset() {
 }
 
 const StorageImageLocation &LocalFileSource::location() {
-	return StorageImageLocation::Null;
+	return StorageImageLocation::Invalid();
 }
 
 void LocalFileSource::refreshFileReference(const QByteArray &data) {
@@ -244,7 +233,7 @@ bool LocalFileSource::isDelayedStorageImage() const {
 
 void LocalFileSource::setImageBytes(const QByteArray &bytes) {
 	_bytes = bytes;
-	load({}, false, true);
+	load({});
 }
 
 int LocalFileSource::width() {
@@ -272,7 +261,7 @@ void LocalFileSource::setInformation(int size, int width, int height) {
 
 void LocalFileSource::ensureDimensionsKnown() {
 	if (!_width || !_height) {
-		load({}, false, false);
+		load({});
 	}
 }
 
@@ -282,13 +271,14 @@ QByteArray LocalFileSource::bytesForCache() {
 }
 
 QImage RemoteSource::takeLoaded() {
-	if (!loaderValid() || !_loader->finished()) {
+	if (!_loader || !_loader->finished()) {
 		return QImage();
 	}
 
 	auto data = _loader->imageData(shrinkBox());
 	if (data.isNull()) {
-		destroyLoader(CancelledFileLoader);
+		_cancelled = true;
+		destroyLoader();
 		return QImage();
 	}
 
@@ -299,45 +289,44 @@ QImage RemoteSource::takeLoaded() {
 	return data;
 }
 
-bool RemoteSource::loaderValid() const {
-	return _loader && !cancelled();
-}
+void RemoteSource::destroyLoader() {
+	if (!_loader) {
+		return;
+	}
 
-void RemoteSource::destroyLoader(FileLoader *newValue) {
-	Expects(loaderValid());
-
-	const auto loader = std::exchange(_loader, newValue);
+	const auto loader = base::take(_loader);
 	if (cancelled()) {
 		loader->cancel();
 	}
 	loader->stop();
-	delete loader;
 }
 
 void RemoteSource::loadLocal() {
-	if (loaderValid()) {
-		return;
+	if (_loader) {
+		return;  
 	}
 
 	_loader = createLoader(Data::FileOrigin(), LoadFromLocalOnly, true);
-	if (_loader) _loader->start();
+	if (_loader) {
+		_loader->start();
+	}
 }
 
 void RemoteSource::setImageBytes(const QByteArray &bytes) {
 	if (bytes.isEmpty()) {
 		return;
-	} else if (loaderValid()) {
+	} else if (_loader) {
 		unload();
 	}
 	_loader = createLoader({}, LoadFromLocalOnly, true);
 	_loader->finishWithBytes(bytes);
 
 	const auto location = this->location();
-	if (!location.isNull()
+	if (location.valid()
 		&& !bytes.isEmpty()
 		&& bytes.size() <= Storage::kMaxFileInMemory) {
 		Auth().data().cache().putIfEmpty(
-			Data::StorageCacheKey(location),
+			location.file().cacheKey(),
 			Storage::Cache::Database::TaggedValue(
 				base::duplicate(bytes),
 				Data::kImageCacheTag));
@@ -345,7 +334,7 @@ void RemoteSource::setImageBytes(const QByteArray &bytes) {
 }
 
 bool RemoteSource::loading() {
-	return loaderValid();
+	return (_loader != nullptr);
 }
 
 void RemoteSource::automaticLoad(
@@ -369,66 +358,55 @@ void RemoteSource::automaticLoad(
 			loadFromCloud ? LoadFromCloudOrLocal : LoadFromLocalOnly,
 			true);
 	}
-	if (loaderValid()) {
+	if (_loader) {
 		_loader->start();
 	}
 }
 
 void RemoteSource::automaticLoadSettingsChanged() {
-	if (_loader == CancelledFileLoader) {
-		_loader = nullptr;
-	}
+	_cancelled = false;
 }
 
-void RemoteSource::load(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
+void RemoteSource::load(Data::FileOrigin origin) {
 	if (!_loader) {
 		_loader = createLoader(origin, LoadFromCloudOrLocal, false);
 	}
-	if (loaderValid()) {
-		_loader->start(loadFirst, prior);
+	if (_loader) {
+		_loader->start();
 	}
 }
 
 bool RemoteSource::cancelled() const {
-	return (_loader == CancelledFileLoader);
+	return _cancelled;
 }
 
-void RemoteSource::loadEvenCancelled(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
-	if (cancelled()) {
-		_loader = nullptr;
-	}
-	return load(origin, loadFirst, prior);
+void RemoteSource::loadEvenCancelled(Data::FileOrigin origin) {
+	_cancelled = false;
+	return load(origin);
 }
 
 bool RemoteSource::displayLoading() {
-	return loaderValid()
-		&& (!_loader->loadingLocal() || !_loader->autoLoading());
+	return _loader && (!_loader->loadingLocal() || !_loader->autoLoading());
 }
 
 void RemoteSource::cancel() {
-	if (!loaderValid()) return;
-
-	destroyLoader(CancelledFileLoader);
+	if (!_loader) {
+		return;
+	}
+	_cancelled = true;
+	destroyLoader();
 }
 
 void RemoteSource::unload() {
-	if (loaderValid()) {
-		delete base::take(_loader);
-	}
+	base::take(_loader);
 }
 
 float64 RemoteSource::progress() {
-	return loaderValid() ? _loader->currentProgress() : 0.;
+	return _loader ? _loader->currentProgress() : 0.;
 }
 
 int RemoteSource::loadOffset() {
-	return loaderValid() ? _loader->currentOffset() : 0;
+	return _loader ? _loader->currentOffset() : 0;
 }
 
 RemoteSource::~RemoteSource() {
@@ -436,7 +414,7 @@ RemoteSource::~RemoteSource() {
 }
 
 const StorageImageLocation &RemoteSource::location() {
-	return StorageImageLocation::Null;
+	return StorageImageLocation::Invalid();
 }
 
 void RemoteSource::refreshFileReference(const QByteArray &data) {
@@ -471,9 +449,9 @@ const StorageImageLocation &StorageSource::location() {
 }
 
 std::optional<Storage::Cache::Key> StorageSource::cacheKey() {
-	return _location.isNull()
-		? std::nullopt
-		: base::make_optional(Data::StorageCacheKey(_location));
+	return _location.valid()
+		? base::make_optional(_location.file().cacheKey())
+		: std::nullopt;
 }
 
 int StorageSource::width() {
@@ -501,20 +479,22 @@ QSize StorageSource::shrinkBox() const {
 	return QSize();
 }
 
-FileLoader *StorageSource::createLoader(
+std::unique_ptr<FileLoader> StorageSource::createLoader(
 		Data::FileOrigin origin,
 		LoadFromCloudSetting fromCloud,
 		bool autoLoading) {
-	if (_location.isNull()) {
-		return nullptr;
-	}
-	return new mtpFileLoader(
-		&_location,
-		origin,
-		_size,
-		fromCloud,
-		autoLoading,
-		Data::kImageCacheTag);
+	return _location.valid()
+		? std::make_unique<mtpFileLoader>(
+			_location.file(),
+			origin,
+			UnknownFileLocation,
+			QString(),
+			_size,
+			LoadToCacheAsWell,
+			fromCloud,
+			autoLoading,
+			Data::kImageCacheTag)
+		: nullptr;
 }
 
 WebCachedSource::WebCachedSource(
@@ -569,18 +549,18 @@ QSize WebCachedSource::shrinkBox() const {
 	return _box;
 }
 
-FileLoader *WebCachedSource::createLoader(
+std::unique_ptr<FileLoader> WebCachedSource::createLoader(
 		Data::FileOrigin origin,
 		LoadFromCloudSetting fromCloud,
 		bool autoLoading) {
-	return _location.isNull()
-		? nullptr
-		: new mtpFileLoader(
-			&_location,
+	return !_location.isNull()
+		? std::make_unique<mtpFileLoader>(
+			_location,
 			_size,
 			fromCloud,
 			autoLoading,
-			Data::kImageCacheTag);
+			Data::kImageCacheTag)
+		: nullptr;
 }
 
 GeoPointSource::GeoPointSource(const GeoPointLocation &location)
@@ -619,16 +599,16 @@ QSize GeoPointSource::shrinkBox() const {
 	return QSize();
 }
 
-FileLoader *GeoPointSource::createLoader(
+std::unique_ptr<FileLoader> GeoPointSource::createLoader(
 		Data::FileOrigin origin,
 		LoadFromCloudSetting fromCloud,
 		bool autoLoading) {
-	return new mtpFileLoader(
-			&_location,
-			_size,
-			fromCloud,
-			autoLoading,
-			Data::kImageCacheTag);
+	return std::make_unique<mtpFileLoader>(
+		_location,
+		_size,
+		fromCloud,
+		autoLoading,
+		Data::kImageCacheTag);
 }
 
 DelayedStorageSource::DelayedStorageSource()
@@ -636,7 +616,7 @@ DelayedStorageSource::DelayedStorageSource()
 }
 
 DelayedStorageSource::DelayedStorageSource(int w, int h)
-: StorageSource(StorageImageLocation(w, h, 0, 0, 0, 0, {}), 0) {
+: StorageSource(StorageImageLocation(StorageFileLocation(), w, h), 0) {
 }
 
 void DelayedStorageSource::setDelayedStorageLocation(
@@ -653,7 +633,7 @@ void DelayedStorageSource::performDelayedLoad(Data::FileOrigin origin) {
 		return;
 	}
 	if (base::take(_loadFromCloud)) {
-		load(origin, false, true);
+		load(origin);
 	} else {
 		loadLocal();
 	}
@@ -662,22 +642,22 @@ void DelayedStorageSource::performDelayedLoad(Data::FileOrigin origin) {
 void DelayedStorageSource::automaticLoad(
 		Data::FileOrigin origin,
 		const HistoryItem *item) {
-	if (_location.isNull()) {
-		if (!_loadCancelled && item) {
-			const auto loadFromCloud = Data::AutoDownload::Should(
-				Auth().settings().autoDownload(),
-				item->history()->peer,
-				this);
-
-			if (_loadRequested) {
-				if (loadFromCloud) _loadFromCloud = loadFromCloud;
-			} else {
-				_loadFromCloud = loadFromCloud;
-				_loadRequested = true;
-			}
-		}
-	} else {
+	if (_location.valid()) {
 		StorageSource::automaticLoad(origin, item);
+		return;
+	} else if (_loadCancelled || !item) {
+		return;
+	}
+	const auto loadFromCloud = Data::AutoDownload::Should(
+		Auth().settings().autoDownload(),
+		item->history()->peer,
+		this);
+
+	if (_loadRequested) {
+		if (loadFromCloud) _loadFromCloud = loadFromCloud;
+	} else {
+		_loadFromCloud = loadFromCloud;
+		_loadRequested = true;
 	}
 }
 
@@ -686,27 +666,21 @@ void DelayedStorageSource::automaticLoadSettingsChanged() {
 	StorageSource::automaticLoadSettingsChanged();
 }
 
-void DelayedStorageSource::load(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
-	if (_location.isNull()) {
-		_loadRequested = _loadFromCloud = true;
+void DelayedStorageSource::load(Data::FileOrigin origin) {
+	if (_location.valid()) {
+		StorageSource::load(origin);
 	} else {
-		StorageSource::load(origin, loadFirst, prior);
+		_loadRequested = _loadFromCloud = true;
 	}
 }
 
-void DelayedStorageSource::loadEvenCancelled(
-		Data::FileOrigin origin,
-		bool loadFirst,
-		bool prior) {
+void DelayedStorageSource::loadEvenCancelled(Data::FileOrigin origin) {
 	_loadCancelled = false;
-	StorageSource::loadEvenCancelled(origin, loadFirst, prior);
+	StorageSource::loadEvenCancelled(origin);
 }
 
 bool DelayedStorageSource::displayLoading() {
-	return _location.isNull() ? true : StorageSource::displayLoading();
+	return _location.valid() ? StorageSource::displayLoading() : true;
 }
 
 void DelayedStorageSource::cancel() {
@@ -761,11 +735,11 @@ QSize WebUrlSource::shrinkBox() const {
 	return _box;
 }
 
-FileLoader *WebUrlSource::createLoader(
+std::unique_ptr<FileLoader> WebUrlSource::createLoader(
 		Data::FileOrigin origin,
 		LoadFromCloudSetting fromCloud,
 		bool autoLoading) {
-	return new webFileLoader(
+	return std::make_unique<webFileLoader>(
 		_url,
 		QString(),
 		fromCloud,

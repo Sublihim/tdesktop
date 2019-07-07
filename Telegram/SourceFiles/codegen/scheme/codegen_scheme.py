@@ -49,6 +49,7 @@ addChildParentFlags('MTPDreplyKeyboardForceReply', 'MTPDreplyKeyboardMarkup');
 addChildParentFlags('MTPDinputPeerNotifySettings', 'MTPDpeerNotifySettings');
 addChildParentFlags('MTPDpeerNotifySettings', 'MTPDinputPeerNotifySettings');
 addChildParentFlags('MTPDchannelForbidden', 'MTPDchannel');
+addChildParentFlags('MTPDdialogFolder', 'MTPDdialog');
 
 # this is a map (key flags -> map (flag name -> flag bit))
 # each key flag of parentFlags should be a subset of the value flag here
@@ -167,7 +168,7 @@ for line in lines:
       templ = re.match(r'^([vV]ector<)([A-Za-z0-9\._]+)>$', restype);
       if (templ):
         vectemplate = templ.group(2);
-        if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+_[A-Z]', vectemplate)):
+        if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+\.[A-Z]', vectemplate)):
           restype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';
         elif (vectemplate == 'int' or vectemplate == 'long' or vectemplate == 'string' or vectemplate == 'bytes'):
           restype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';
@@ -253,7 +254,7 @@ for line in lines:
             templ = re.match(r'^([vV]ector<)([A-Za-z0-9\._]+)>$', ptype);
             if (templ):
               vectemplate = templ.group(2);
-              if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+_[A-Z]', vectemplate)):
+              if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+\.[A-Z]', vectemplate)):
                 ptype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';
               elif (vectemplate == 'int' or vectemplate == 'long' or vectemplate == 'string' or vectemplate == 'bytes'):
                 ptype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';
@@ -283,7 +284,7 @@ for line in lines:
           templ = re.match(r'^([vV]ector<)([A-Za-z0-9\._]+)>$', ptype);
           if (templ):
             vectemplate = templ.group(2);
-            if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+_[A-Z]', vectemplate)):
+            if (re.match(r'^[A-Z]', vectemplate) or re.match(r'^[a-zA-Z0-9]+\.[A-Z]', vectemplate)):
               ptype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';
             elif (vectemplate == 'int' or vectemplate == 'long' or vectemplate == 'string' or vectemplate == 'bytes'):
               ptype = templ.group(1) + 'MTP' + vectemplate.replace('.', '_') + '>';

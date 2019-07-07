@@ -49,9 +49,9 @@ public:
 
 	[[nodiscard]] not_null<History*> history() const;
 
-	[[nodiscard]] virtual TextWithEntities selectedText(
+	[[nodiscard]] virtual TextForMimeData selectedText(
 			TextSelection selection) const {
-		return TextWithEntities();
+		return TextForMimeData();
 	}
 
 	[[nodiscard]] virtual bool isDisplayed() const;
@@ -72,7 +72,7 @@ public:
 		Painter &p,
 		const QRect &r,
 		TextSelection selection,
-		TimeMs ms) const = 0;
+		crl::time ms) const = 0;
 	[[nodiscard]] virtual PointState pointState(QPoint point) const;
 	[[nodiscard]] virtual TextState textState(
 		QPoint point,
@@ -141,7 +141,7 @@ public:
 			Painter &p,
 			const QRect &clip,
 			TextSelection selection,
-			TimeMs ms,
+			crl::time ms,
 			const QRect &geometry,
 			RectParts corners,
 			not_null<uint64*> cacheKey,
@@ -201,6 +201,10 @@ public:
 		return false;
 	}
 
+	[[nodiscard]] virtual bool hidesForwardedInfo() const {
+		return false;
+	}
+
 	// Sometimes webpages can force the bubble to fit their size instead of
 	// allowing message text to be as wide as possible (like wallpapers).
 	[[nodiscard]] virtual bool enforceBubbleWidth() const {
@@ -216,6 +220,9 @@ public:
 		return true;
 	}
 
+	virtual void unloadHeavyPart() {
+	}
+
 	// Should be called only by Data::Session.
 	virtual void updateSharedContactUserId(UserId userId) {
 	}
@@ -229,7 +236,7 @@ protected:
 	using InfoDisplayType = HistoryView::InfoDisplayType;
 
 	QSize countCurrentSize(int newWidth) override;
-	Text createCaption(not_null<HistoryItem*> item) const;
+	Ui::Text::String createCaption(not_null<HistoryItem*> item) const;
 
 	virtual void playAnimation(bool autoplay) {
 	}

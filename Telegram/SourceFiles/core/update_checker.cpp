@@ -7,17 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/update_checker.h"
 
-#include "platform/platform_specific.h"
+#include "platform/platform_info.h"
 #include "base/timer.h"
 #include "base/bytes.h"
 #include "storage/localstorage.h"
 #include "core/application.h"
-#include "core/sandbox.h"
 #include "mainwindow.h"
 #include "core/click_handler_types.h"
 #include "info/info_memento.h"
 #include "info/settings/info_settings_widget.h"
-#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 #include "settings/settings_intro.h"
 
 extern "C" {
@@ -36,7 +35,7 @@ extern "C" {
 namespace Core {
 namespace {
 
-constexpr auto kUpdaterTimeout = 10 * TimeMs(1000);
+constexpr auto kUpdaterTimeout = 10 * crl::time(1000);
 constexpr auto kMaxResponseSize = 1024 * 1024;
 
 #ifdef TDESKTOP_DISABLE_AUTOUPDATE
@@ -496,14 +495,19 @@ bool ParseCommonMap(
 	}
 	const auto platforms = document.object();
 	const auto platform = [&] {
-		switch (cPlatform()) {
-		case dbipWindows: return "win";
-		case dbipMac: return "mac";
-		case dbipMacOld: return "mac32";
-		case dbipLinux64: return "linux";
-		case dbipLinux32: return "linux32";
+		if (Platform::IsWindows()) {
+			return "win";
+		} else if (Platform::IsMacOldBuild()) {
+			return "mac32";
+		} else if (Platform::IsMac()) {
+			return "mac";
+		} else if (Platform::IsLinux32Bit()) {
+			return "linux32";
+		} else if (Platform::IsLinux64Bit()) {
+			return "linux";
+		} else {
+			Unexpected("Platform in ParseCommonMap.");
 		}
-		Unexpected("Platform in ParseCommonMap.");
 	}();
 	const auto it = platforms.constFind(platform);
 	if (it == platforms.constEnd()) {
@@ -1227,7 +1231,7 @@ void Updater::start(bool forceWait) {
 
 		_checking.fire({});
 	} else {
-		_timer.callOnce((updateInSecs + 5) * TimeMs(1000));
+		_timer.callOnce((updateInSecs + 5) * crl::time(1000));
 	}
 }
 
@@ -1384,7 +1388,7 @@ Updater::~Updater() {
 
 UpdateChecker::UpdateChecker()
 : _updater(GetUpdaterInstance()) {
-	if (Sandbox::Instance().applicationLaunched()) {
+	if (IsAppLaunched()) {
 		if (const auto mtproto = Core::App().mtp()) {
 			_updater->setMtproto(mtproto);
 		}
@@ -1573,7 +1577,7 @@ void UpdateApplication() {
 	} else {
 		cSetAutoUpdate(true);
 		if (const auto window = App::wnd()) {
-			if (const auto controller = window->controller()) {
+			if (const auto controller = window->sessionController()) {
 				controller->showSection(
 					Info::Memento(
 						Info::Settings::Tag{ Auth().user() },
