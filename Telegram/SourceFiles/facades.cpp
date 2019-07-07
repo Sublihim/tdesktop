@@ -11,8 +11,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "core/application.h"
 #include "media/clip/media_clip_reader.h"
-#include "window/window_controller.h"
+#include "window/window_session_controller.h"
 #include "history/history_item_components.h"
+#include "platform/platform_info.h"
 #include "data/data_peer.h"
 #include "data/data_user.h"
 #include "observer_peer.h"
@@ -83,7 +84,7 @@ void activateBotCommand(
 	} break;
 
 	case ButtonType::Buy: {
-		Ui::show(Box<InformBox>(lang(lng_payments_not_supported)));
+		Ui::show(Box<InformBox>(tr::lng_payments_not_supported(tr::now)));
 	} break;
 
 	case ButtonType::Url: {
@@ -103,18 +104,18 @@ void activateBotCommand(
 
 	case ButtonType::RequestLocation: {
 		hideSingleUseKeyboard(msg);
-		Ui::show(Box<InformBox>(lang(lng_bot_share_location_unavailable)));
+		Ui::show(Box<InformBox>(tr::lng_bot_share_location_unavailable(tr::now)));
 	} break;
 
 	case ButtonType::RequestPhone: {
 		hideSingleUseKeyboard(msg);
 		const auto msgId = msg->id;
 		const auto history = msg->history();
-		Ui::show(Box<ConfirmBox>(lang(lng_bot_share_phone), lang(lng_bot_share_phone_confirm), [=] {
+		Ui::show(Box<ConfirmBox>(tr::lng_bot_share_phone(tr::now), tr::lng_bot_share_phone_confirm(tr::now), [=] {
 			Ui::showPeerHistory(history, ShowAtTheEndMsgId);
 			auto options = ApiWrap::SendOptions(history);
 			options.replyTo = msgId;
-			Auth().api().shareContact(Auth().user(), options);
+			history->session().api().shareContact(Auth().user(), options);
 		}));
 	} break;
 
@@ -191,20 +192,6 @@ void showBox(
 
 } // namespace internal
 
-void showMediaPreview(
-		Data::FileOrigin origin,
-		not_null<DocumentData*> document) {
-	if (auto w = App::wnd()) {
-		w->ui_showMediaPreview(origin, document);
-	}
-}
-
-void showMediaPreview(Data::FileOrigin origin, not_null<PhotoData*> photo) {
-	if (auto w = App::wnd()) {
-		w->ui_showMediaPreview(origin, photo);
-	}
-}
-
 void hideLayer(anim::type animated) {
 	if (auto w = App::wnd()) {
 		w->ui_showBox(
@@ -226,8 +213,8 @@ bool isLayerShown() {
 }
 
 void showPeerProfile(const PeerId &peer) {
-	if (auto window = App::wnd()) {
-		if (auto controller = window->controller()) {
+	if (const auto window = App::wnd()) {
+		if (const auto controller = window->sessionController()) {
 			controller->showPeerInfo(peer);
 		}
 	}
@@ -436,7 +423,7 @@ struct Data {
 	Notify::ScreenCorner NotificationsCorner = Notify::ScreenCorner::BottomRight;
 	bool NotificationsDemoIsShown = false;
 
-	bool TryIPv6 = (cPlatform() == dbipWindows) ? false : true;
+	bool TryIPv6 = !Platform::IsWindows();
 	std::vector<ProxyData> ProxiesList;
 	ProxyData SelectedProxy;
 	ProxyData::Settings ProxySettings = ProxyData::Settings::System;

@@ -20,6 +20,7 @@ namespace {
 constexpr auto kDocumentBaseCacheTag = 0x0000000000010000ULL;
 constexpr auto kDocumentBaseCacheMask = 0x000000000000FF00ULL;
 constexpr auto kSerializeTypeShift = quint8(0x08);
+const auto kInMediaCacheLocation = QString("*media_cache*");
 
 MTPInputPeer GenerateInputPeer(
 		uint64 id,
@@ -83,36 +84,36 @@ StorageFileLocation::StorageFileLocation(
 : _dcId(dcId) {
 	tl.match([&](const MTPDinputFileLocation &data) {
 		_type = Type::Legacy;
-		_volumeId = data.vvolume_id.v;
-		_localId = data.vlocal_id.v;
-		_accessHash = data.vsecret.v;
-		_fileReference = data.vfile_reference.v;
+		_volumeId = data.vvolume_id().v;
+		_localId = data.vlocal_id().v;
+		_accessHash = data.vsecret().v;
+		_fileReference = data.vfile_reference().v;
 	}, [&](const MTPDinputEncryptedFileLocation &data) {
 		_type = Type::Encrypted;
-		_id = data.vid.v;
-		_accessHash = data.vaccess_hash.v;
+		_id = data.vid().v;
+		_accessHash = data.vaccess_hash().v;
 	}, [&](const MTPDinputDocumentFileLocation &data) {
 		_type = Type::Document;
-		_id = data.vid.v;
-		_accessHash = data.vaccess_hash.v;
-		_fileReference = data.vfile_reference.v;
-		_sizeLetter = data.vthumb_size.v.isEmpty()
+		_id = data.vid().v;
+		_accessHash = data.vaccess_hash().v;
+		_fileReference = data.vfile_reference().v;
+		_sizeLetter = data.vthumb_size().v.isEmpty()
 			? uint8(0)
-			: uint8(data.vthumb_size.v[0]);
+			: uint8(data.vthumb_size().v[0]);
 	}, [&](const MTPDinputSecureFileLocation &data) {
 		_type = Type::Secure;
-		_id = data.vid.v;
-		_accessHash = data.vaccess_hash.v;
+		_id = data.vid().v;
+		_accessHash = data.vaccess_hash().v;
 	}, [&](const MTPDinputTakeoutFileLocation &data) {
 		_type = Type::Takeout;
 	}, [&](const MTPDinputPhotoFileLocation &data) {
 		_type = Type::Photo;
-		_id = data.vid.v;
-		_accessHash = data.vaccess_hash.v;
-		_fileReference = data.vfile_reference.v;
-		_sizeLetter = data.vthumb_size.v.isEmpty()
+		_id = data.vid().v;
+		_accessHash = data.vaccess_hash().v;
+		_fileReference = data.vfile_reference().v;
+		_sizeLetter = data.vthumb_size().v.isEmpty()
 			? char(0)
-			: data.vthumb_size.v[0];
+			: data.vthumb_size().v[0];
 	}, [&](const MTPDinputPeerPhotoFileLocation &data) {
 		_type = Type::PeerPhoto;
 		const auto fillPeer = base::overload([&](
@@ -121,45 +122,45 @@ StorageFileLocation::StorageFileLocation(
 		}, [&](const MTPDinputPeerSelf & data) {
 			_id = peerFromUser(self);
 		}, [&](const MTPDinputPeerChat & data) {
-			_id = peerFromChat(data.vchat_id);
+			_id = peerFromChat(data.vchat_id());
 		}, [&](const MTPDinputPeerUser & data) {
-			_id = peerFromUser(data.vuser_id);
-			_accessHash = data.vaccess_hash.v;
+			_id = peerFromUser(data.vuser_id());
+			_accessHash = data.vaccess_hash().v;
 		}, [&](const MTPDinputPeerChannel & data) {
-			_id = peerFromChannel(data.vchannel_id);
-			_accessHash = data.vaccess_hash.v;
+			_id = peerFromChannel(data.vchannel_id());
+			_accessHash = data.vaccess_hash().v;
 		});
-		data.vpeer.match(fillPeer, [&](
+		data.vpeer().match(fillPeer, [&](
 				const MTPDinputPeerUserFromMessage &data) {
-			data.vpeer.match(fillPeer, [&](auto &&) {
+			data.vpeer().match(fillPeer, [&](auto &&) {
 				// Bad data provided.
 				_id = _accessHash = 0;
 			});
-			_inMessagePeerId = data.vuser_id.v;
-			_inMessageId = data.vmsg_id.v;
+			_inMessagePeerId = data.vuser_id().v;
+			_inMessageId = data.vmsg_id().v;
 		}, [&](const MTPDinputPeerChannelFromMessage &data) {
-			data.vpeer.match(fillPeer, [&](auto &&) {
+			data.vpeer().match(fillPeer, [&](auto &&) {
 				// Bad data provided.
 				_id = _accessHash = 0;
 			});
-			_inMessagePeerId = -data.vchannel_id.v;
-			_inMessageId = data.vmsg_id.v;
+			_inMessagePeerId = -data.vchannel_id().v;
+			_inMessageId = data.vmsg_id().v;
 		});
-		_volumeId = data.vvolume_id.v;
-		_localId = data.vlocal_id.v;
+		_volumeId = data.vvolume_id().v;
+		_localId = data.vlocal_id().v;
 		_sizeLetter = data.is_big() ? 'c' : 'a';
 	}, [&](const MTPDinputStickerSetThumb &data) {
 		_type = Type::StickerSetThumb;
-		data.vstickerset.match([&](const MTPDinputStickerSetEmpty &data) {
+		data.vstickerset().match([&](const MTPDinputStickerSetEmpty &data) {
 			_id = 0;
 		}, [&](const MTPDinputStickerSetID &data) {
-			_id = data.vid.v;
-			_accessHash = data.vaccess_hash.v;
+			_id = data.vid().v;
+			_accessHash = data.vaccess_hash().v;
 		}, [&](const MTPDinputStickerSetShortName &data) {
 			Unexpected("inputStickerSetShortName in StorageFileLocation().");
 		});
-		_volumeId = data.vvolume_id.v;
-		_localId = data.vlocal_id.v;
+		_volumeId = data.vvolume_id().v;
+		_localId = data.vlocal_id().v;
 	});
 }
 
@@ -406,9 +407,17 @@ Storage::Cache::Key StorageFileLocation::bigFileBaseCacheKey() const {
 		return Storage::Cache::Key{ high, low };
 	}
 
+	case Type::StickerSetThumb: {
+		const auto high = (uint64(uint32(_localId)) << 24)
+			| ((uint64(_type) + 1) << 16)
+			| ((uint64(_dcId) & 0xFFULL) << 8)
+			| (_volumeId >> 56);
+		const auto low = (_volumeId << 8);
+		return Storage::Cache::Key{ high, low };
+	}
+
 	case Type::Legacy:
 	case Type::PeerPhoto:
-	case Type::StickerSetThumb:
 	case Type::Encrypted:
 	case Type::Secure:
 	case Type::Photo:
@@ -496,6 +505,57 @@ bool operator==(const StorageFileLocation &a, const StorageFileLocation &b) {
 	Unexpected("Type in StorageFileLocation::operator==.");
 }
 
+bool operator<(const StorageFileLocation &a, const StorageFileLocation &b) {
+	const auto valid = a.valid();
+	if (valid != b.valid()) {
+		return !valid;
+	} else if (!valid) {
+		return false;
+	}
+	const auto type = a._type;
+	if (type != b._type) {
+		return (type < b._type);
+	}
+
+	using Type = StorageFileLocation::Type;
+	switch (type) {
+	case Type::Legacy:
+		return std::tie(a._localId, a._volumeId, a._dcId)
+			< std::tie(b._localId, b._volumeId, b._dcId);
+
+	case Type::Encrypted:
+	case Type::Secure:
+		return std::tie(a._id, a._dcId) < std::tie(b._id, b._dcId);
+
+	case Type::Photo:
+	case Type::Document:
+		return std::tie(a._id, a._dcId, a._sizeLetter)
+			< std::tie(b._id, b._dcId, b._sizeLetter);
+
+	case Type::Takeout:
+		return false;
+
+	case Type::PeerPhoto:
+		return std::tie(
+			a._id,
+			a._sizeLetter,
+			a._localId,
+			a._volumeId,
+			a._dcId)
+			< std::tie(
+				b._id,
+				b._sizeLetter,
+				b._localId,
+				b._volumeId,
+				b._dcId);
+
+	case Type::StickerSetThumb:
+		return std::tie(a._id, a._localId, a._volumeId, a._dcId)
+			< std::tie(b._id, b._localId, b._volumeId, b._dcId);
+	};
+	Unexpected("Type in StorageFileLocation::operator==.");
+}
+
 InMemoryKey inMemoryKey(const StorageFileLocation &location) {
 	const auto key = location.cacheKey();
 	return { key.high, key.low };
@@ -571,7 +631,7 @@ ReadAccessEnabler::~ReadAccessEnabler() {
 }
 
 FileLocation::FileLocation(const QString &name) : fname(name) {
-	if (fname.isEmpty()) {
+	if (fname.isEmpty() || fname == kInMediaCacheLocation) {
 		size = 0;
 	} else {
 		setBookmark(psPathBookmark(name));
@@ -595,8 +655,14 @@ FileLocation::FileLocation(const QString &name) : fname(name) {
 	}
 }
 
+FileLocation FileLocation::InMediaCacheLocation() {
+	return FileLocation(kInMediaCacheLocation);
+}
+
 bool FileLocation::check() const {
-	if (fname.isEmpty()) return false;
+	if (fname.isEmpty() || fname == kInMediaCacheLocation) {
+		return false;
+	}
 
 	ReadAccessEnabler enabler(_bookmark);
 	if (enabler.failed()) {
@@ -630,6 +696,10 @@ const QString &FileLocation::name() const {
 
 QByteArray FileLocation::bookmark() const {
 	return _bookmark ? _bookmark->bookmark() : QByteArray();
+}
+
+bool FileLocation::inMediaCache() const {
+	return (fname == kInMediaCacheLocation);
 }
 
 void FileLocation::setBookmark(const QByteArray &bm) {

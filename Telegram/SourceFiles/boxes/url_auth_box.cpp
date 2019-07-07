@@ -48,7 +48,7 @@ void UrlAuthBox::Activate(
 
 		button->requestId = 0;
 		result.match([&](const MTPDurlAuthResultAccepted &data) {
-			UrlClickHandler::Open(qs(data.vurl));
+			UrlClickHandler::Open(qs(data.vurl()));
 		}, [&](const MTPDurlAuthResultDefault &data) {
 			HiddenUrlClickHandler::Open(url);
 		}, [&](const MTPDurlAuthResultRequest &data) {
@@ -82,7 +82,7 @@ void UrlAuthBox::Request(
 	const auto url = QString::fromUtf8(button->data);
 
 	const auto bot = request.is_request_write_access()
-		? session->data().processUser(request.vbot).get()
+		? session->data().processUser(request.vbot()).get()
 		: nullptr;
 	const auto box = std::make_shared<QPointer<BoxContent>>();
 	const auto finishWithUrl = [=](const QString &url) {
@@ -105,7 +105,7 @@ void UrlAuthBox::Request(
 			)).done([=](const MTPUrlAuthResult &result) {
 				const auto to = result.match(
 				[&](const MTPDurlAuthResultAccepted &data) {
-					return qs(data.vurl);
+					return qs(data.vurl());
 				}, [&](const MTPDurlAuthResultDefault &data) {
 					return url;
 				}, [&](const MTPDurlAuthResultRequest &data) {
@@ -120,7 +120,7 @@ void UrlAuthBox::Request(
 		}
 	};
 	*box = Ui::show(
-		Box<UrlAuthBox>(url, qs(request.vdomain), bot, callback),
+		Box<UrlAuthBox>(url, qs(request.vdomain()), bot, callback),
 		LayerOption::KeepOther);
 }
 
@@ -135,8 +135,8 @@ UrlAuthBox::UrlAuthBox(
 
 void UrlAuthBox::prepare() {
 	setDimensionsToContent(st::boxWidth, _content);
-	addButton(langFactory(lng_open_link), [=] { _callback(); });
-	addButton(langFactory(lng_cancel), [=] { closeBox(); });
+	addButton(tr::lng_open_link(), [=] { _callback(); });
+	addButton(tr::lng_cancel(), [=] { closeBox(); });
 }
 
 not_null<Ui::RpWidget*> UrlAuthBox::setupContent(
@@ -148,8 +148,7 @@ not_null<Ui::RpWidget*> UrlAuthBox::setupContent(
 	result->add(
 		object_ptr<Ui::FlatLabel>(
 			result,
-			lng_url_auth_open_confirm(lt_link, url),
-			Ui::FlatLabel::InitType::Simple,
+			tr::lng_url_auth_open_confirm(tr::now, lt_link, url),
 			st::boxLabel),
 		st::boxPadding);
 	const auto addCheckbox = [&](const QString &text) {
@@ -169,7 +168,8 @@ not_null<Ui::RpWidget*> UrlAuthBox::setupContent(
 		return checkbox;
 	};
 	const auto auth = addCheckbox(
-		lng_url_auth_login_option(
+		tr::lng_url_auth_login_option(
+			tr::now,
 			lt_domain,
 			textcmdStartSemibold() + domain + textcmdStopSemibold(),
 			lt_user,
@@ -177,7 +177,8 @@ not_null<Ui::RpWidget*> UrlAuthBox::setupContent(
 				+ App::peerName(Auth().user())
 				+ textcmdStopSemibold())));
 	const auto allow = bot
-		? addCheckbox(lng_url_auth_allow_messages(
+		? addCheckbox(tr::lng_url_auth_allow_messages(
+			tr::now,
 			lt_bot,
 			textcmdStartSemibold() + bot->firstName + textcmdStopSemibold()))
 		: nullptr;
