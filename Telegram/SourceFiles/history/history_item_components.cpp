@@ -15,22 +15,36 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_message.h"
 #include "history/view/history_view_service_message.h"
-#include "history/media/history_media_document.h"
+#include "history/view/media/history_view_document.h"
+#include "mainwindow.h"
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_instance.h"
 #include "data/data_media_types.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
 #include "data/data_file_origin.h"
-#include "auth_session.h"
+#include "data/data_document.h"
+#include "main/main_session.h"
+#include "window/window_session_controller.h"
+#include "facades.h"
 #include "styles/style_widgets.h"
 #include "styles/style_history.h"
+
+#include <QtGui/QGuiApplication>
 
 void HistoryMessageVia::create(UserId userId) {
 	bot = Auth().data().user(userId);
 	maxWidth = st::msgServiceNameFont->width(
 		tr::lng_inline_bot_via(tr::now, lt_inline_bot, '@' + bot->username));
 	link = std::make_shared<LambdaClickHandler>([bot = this->bot] {
+		if (QGuiApplication::keyboardModifiers() == Qt::ControlModifier) {
+			if (const auto window = App::wnd()) {
+				if (const auto controller = window->sessionController()) {
+					controller->showPeerInfo(bot);
+					return;
+				}
+			}
+		}
 		App::insertBotCommand('@' + bot->username);
 	});
 }
@@ -70,7 +84,9 @@ int HistoryMessageSigned::maxWidth() const {
 }
 
 void HistoryMessageEdited::refresh(const QString &date, bool displayed) {
-	const auto prefix = displayed ? (tr::lng_edited(tr::now) + ' ') : QString();
+	const auto prefix = displayed
+		? (tr::lng_edited(tr::now) + ' ')
+		: QString();
 	text.setText(st::msgDateTextStyle, prefix + date, Ui::NameTextOptions());
 }
 
@@ -99,7 +115,7 @@ void HistoryMessageForwarded::create(const HistoryMessageVia *via) const {
 		&& originalSender->isChannel()
 		&& !originalSender->isMegagroup();
 	const auto name = originalSender
-		? App::peerName(originalSender)
+		? originalSender->name
 		: hiddenSenderInfo->name;
 	if (!originalAuthor.isEmpty()) {
 		phrase = tr::lng_forwarded_signed(
@@ -164,6 +180,7 @@ void HistoryMessageForwarded::create(const HistoryMessageVia *via) const {
 bool HistoryMessageReply::updateData(
 		not_null<HistoryMessage*> holder,
 		bool force) {
+	const auto guard = gsl::finally([&] { refreshReplyToDocument(); });
 	if (!force) {
 		if (replyToMsg || !replyToMsgId) {
 			return true;
@@ -226,6 +243,7 @@ void HistoryMessageReply::clearData(not_null<HistoryMessage*> holder) {
 		replyToMsg = nullptr;
 	}
 	replyToMsgId = 0;
+	refreshReplyToDocument();
 }
 
 bool HistoryMessageReply::isNameUpdated() const {
@@ -244,12 +262,9 @@ void HistoryMessageReply::updateName() const {
 			}
 			return replyToMsg->author().get();
 		}();
-		const auto name = [&] {
-			if (replyToVia && from->isUser()) {
-				return from->asUser()->firstName;
-			}
-			return App::peerName(from);
-		}();
+		const auto name = (replyToVia && from->isUser())
+			? from->asUser()->firstName
+			: from->name;
 		replyToName.setText(st::fwdTextStyle, name, Ui::NameTextOptions());
 		replyToVersion = replyToMsg->author()->nameVersion;
 		bool hasPreview = replyToMsg->media() ? replyToMsg->media()->hasReplyPreview() : false;
@@ -296,7 +311,7 @@ void HistoryMessageReply::paint(
 	if (flags & PaintFlag::InBubble) {
 		bar = (flags & PaintFlag::Selected) ? (outbg ? st::msgOutReplyBarSelColor : st::msgInReplyBarSelColor) : (outbg ? st::msgOutReplyBarColor : st::msgInReplyBarColor);
 	}
-	QRect rbar(rtlrect(x + st::msgReplyBarPos.x(), y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.width(), st::msgReplyBarSize.height(), w + 2 * x));
+	QRect rbar(style::rtlrect(x + st::msgReplyBarPos.x(), y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.width(), st::msgReplyBarSize.height(), w + 2 * x));
 	p.fillRect(rbar, bar);
 
 	if (w > st::msgReplyBarSkip) {
@@ -309,7 +324,7 @@ void HistoryMessageReply::paint(
 
 			if (hasPreview) {
 				if (const auto image = replyToMsg->media()->replyPreview()) {
-					auto to = rtlrect(x + st::msgReplyBarSkip, y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.height(), st::msgReplyBarSize.height(), w + 2 * x);
+					auto to = style::rtlrect(x + st::msgReplyBarSkip, y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.height(), st::msgReplyBarSize.height(), w + 2 * x);
 					auto previewWidth = image->width() / cIntRetinaFactor();
 					auto previewHeight = image->height() / cIntRetinaFactor();
 					auto preview = image->pixSingle(replyToMsg->fullId(), previewWidth, previewHeight, to.width(), to.height(), ImageRoundRadius::Small, RectPart::AllCorners, selected ? &st::msgStickerOverlay : nullptr);
@@ -342,6 +357,15 @@ void HistoryMessageReply::paint(
 			auto &date = outbg ? (selected ? st::msgOutDateFgSelected : st::msgOutDateFg) : (selected ? st::msgInDateFgSelected : st::msgInDateFg);
 			p.setPen((flags & PaintFlag::InBubble) ? date : st::msgDateImgFg);
 			p.drawTextLeft(x + st::msgReplyBarSkip, y + st::msgReplyPadding.top() + (st::msgReplyBarSize.height() - st::msgDateFont->height) / 2, w + 2 * x, st::msgDateFont->elided(replyToMsgId ? tr::lng_profile_loading(tr::now) : tr::lng_deleted_message(tr::now), w - st::msgReplyBarSkip));
+		}
+	}
+}
+
+void HistoryMessageReply::refreshReplyToDocument() {
+	replyToDocumentId = 0;
+	if (const auto media = replyToMsg ? replyToMsg->media() : nullptr) {
+		if (const auto document = media->document()) {
+			replyToDocumentId = document->id;
 		}
 	}
 }
@@ -820,6 +844,21 @@ void HistoryMessageReplyMarkup::createFromButtonRows(
 				}, [&](const MTPDinputKeyboardButtonUrlAuth &data) {
 					LOG(("API Error: inputKeyboardButtonUrlAuth received."));
 					// Should not get those for the users.
+				}, [&](const MTPDkeyboardButtonRequestPoll &data) {
+					const auto quiz = [&] {
+						if (!data.vquiz()) {
+							return QByteArray();
+						}
+						return data.vquiz()->match([&](const MTPDboolTrue&) {
+							return QByteArray(1, 1);
+						}, [&](const MTPDboolFalse&) {
+							return QByteArray(1, 0);
+						});
+					}();
+					row.emplace_back(
+						Type::RequestPoll,
+						qs(data.vtext()),
+						quiz);
 				});
 			}
 			if (!row.empty()) {
@@ -912,16 +951,16 @@ HistoryDocumentCaptioned::HistoryDocumentCaptioned()
 }
 
 HistoryDocumentVoicePlayback::HistoryDocumentVoicePlayback(
-	const HistoryDocument *that)
+	const HistoryView::Document *that)
 : progress(0., 0.)
 , progressAnimation([=](crl::time now) {
-	const auto nonconst = const_cast<HistoryDocument*>(that);
+	const auto nonconst = const_cast<HistoryView::Document*>(that);
 	return nonconst->voiceProgressAnimationCallback(now);
 }) {
 }
 
 void HistoryDocumentVoice::ensurePlayback(
-		const HistoryDocument *that) const {
+		const HistoryView::Document *that) const {
 	if (!_playback) {
 		_playback = std::make_unique<HistoryDocumentVoicePlayback>(that);
 	}

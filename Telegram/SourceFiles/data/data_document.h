@@ -8,8 +8,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/flags.h"
+#include "base/binary_guard.h"
 #include "data/data_types.h"
 #include "ui/image/image.h"
+
+class mtpFileLoader;
 
 namespace Images {
 class Source;
@@ -31,8 +34,9 @@ namespace Data {
 class Session;
 } // namespace Data
 
-class AuthSession;
-class mtpFileLoader;
+namespace Main {
+class Session;
+} // namespace Main
 
 inline uint64 mediaMix32To64(int32 a, int32 b) {
 	return (uint64(*reinterpret_cast<uint32*>(&a)) << 32)
@@ -84,7 +88,7 @@ public:
 	DocumentData(not_null<Data::Session*> owner, DocumentId id);
 
 	[[nodiscard]] Data::Session &owner() const;
-	[[nodiscard]] AuthSession &session() const;
+	[[nodiscard]] Main::Session &session() const;
 
 	void setattributes(
 		const QVector<MTPDocumentAttribute> &attributes);
@@ -163,6 +167,7 @@ public:
 	void setData(const QByteArray &data) {
 		_data = data;
 	}
+	void setDataAndCache(const QByteArray &data);
 	bool checkWallPaperProperties();
 	[[nodiscard]] bool isWallPaper() const;
 	[[nodiscard]] bool isPatternWallPaper() const;

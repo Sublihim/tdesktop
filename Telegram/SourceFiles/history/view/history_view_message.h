@@ -14,6 +14,8 @@ struct HistoryMessageEdited;
 
 namespace HistoryView {
 
+class WebPage;
+
 // Special type of Component for the channel actions log.
 struct LogEntryOriginal
 	: public RuntimeComponent<LogEntryOriginal, Element> {
@@ -22,7 +24,7 @@ struct LogEntryOriginal
 	LogEntryOriginal &operator=(LogEntryOriginal &&other);
 	~LogEntryOriginal();
 
-	std::unique_ptr<HistoryWebPage> page;
+	std::unique_ptr<WebPage> page;
 
 };
 
@@ -84,6 +86,8 @@ public:
 	TimeId displayedEditDate() const override;
 	int infoWidth() const override;
 
+	VerticalRepaintRange verticalRepaintRange() const override;
+
 protected:
 	void refreshDataIdHook() override;
 
@@ -140,14 +144,13 @@ private:
 	bool displayFastShare() const;
 	bool displayGoToOriginal() const;
 	ClickHandlerPtr fastReplyLink() const;
-	TimeId displayedEditDate(bool hasViaBotOrInlineMarkup) const;
 	const HistoryMessageEdited *displayedEditBadge() const;
 	HistoryMessageEdited *displayedEditBadge();
 	void initTime();
 	int timeLeft() const;
 	int plainMaxWidth() const;
 
-	HistoryWebPage *logEntryOriginal() const;
+	WebPage *logEntryOriginal() const;
 
 	mutable ClickHandlerPtr _rightActionLink;
 	mutable ClickHandlerPtr _fastReplyLink;

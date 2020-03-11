@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/text_options.h"
+#include "ui/ui_utility.h"
 #include "data/data_drafts.h"
 #include "data/data_folder.h"
 #include "data/data_session.h"
@@ -25,6 +26,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat.h"
 #include "data/data_user.h"
 #include "data/data_peer_values.h"
+#include "data/data_histories.h"
+#include "base/unixtime.h"
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
 #include "mainwidget.h"
@@ -33,13 +36,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/themes/window_theme.h"
 #include "observer_peer.h"
 #include "chat_helpers/stickers.h"
-#include "auth_session.h"
+#include "main/main_session.h"
 #include "window/notifications_manager.h"
 #include "window/window_session_controller.h"
 #include "window/window_peer_menu.h"
 #include "ui/widgets/multi_select.h"
 #include "ui/empty_userpic.h"
 #include "ui/unread_badge.h"
+#include "facades.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_window.h"
@@ -118,7 +122,7 @@ InnerWidget::InnerWidget(
 		? Global::DialogsMode()
 		: Dialogs::Mode::All;
 
-	connect(_addContactLnk, SIGNAL(clicked()), App::wnd(), SLOT(onShowAddContact()));
+	_addContactLnk->addClickHandler([] { App::wnd()->onShowAddContact(); });
 	_cancelSearchInChat->setClickedCallback([=] { cancelSearchInChat(); });
 	_cancelSearchInChat->hide();
 	_cancelSearchFromUser->setClickedCallback([=] {
@@ -249,7 +253,7 @@ InnerWidget::InnerWidget(
 	setupShortcuts();
 }
 
-AuthSession &InnerWidget::session() const {
+Main::Session &InnerWidget::session() const {
 	return _controller->session();
 }
 
@@ -1073,7 +1077,7 @@ void InnerWidget::checkReorderPinnedStart(QPoint localPosition) {
 	if (!_pressed || _dragging || _state != WidgetState::Default) {
 		return;
 	} else if (qAbs(localPosition.y() - _dragStart.y())
-		< ConvertScale(kStartReorderThreshold)) {
+		< style::ConvertScale(kStartReorderThreshold)) {
 		return;
 	}
 	_dragging = _pressed;
@@ -1999,6 +2003,7 @@ bool InnerWidget::hasHistoryInResults(not_null<History*> history) const {
 
 bool InnerWidget::searchReceived(
 		const QVector<MTPMessage> &messages,
+		HistoryItem *inject,
 		SearchRequestType type,
 		int fullCount) {
 	const auto uniquePeers = uniqueSearchResults();
@@ -2009,6 +2014,16 @@ bool InnerWidget::searchReceived(
 	auto isMigratedSearch = (type == SearchRequestType::MigratedFromStart || type == SearchRequestType::MigratedFromOffset);
 
 	TimeId lastDateFound = 0;
+	if (inject
+		&& (!_searchInChat
+			|| inject->history() == _searchInChat.history())) {
+		Assert(_searchResults.empty());
+		_searchResults.push_back(
+			std::make_unique<FakeRow>(
+				_searchInChat,
+				inject));
+		++fullCount;
+	}
 	for (const auto &message : messages) {
 		auto msgId = IdFromMessage(message);
 		auto peerId = PeerFromMessage(message);
@@ -2017,6 +2032,7 @@ bool InnerWidget::searchReceived(
 			if (lastDate) {
 				const auto item = session().data().addNewMessage(
 					message,
+					MTPDmessage_ClientFlags(),
 					NewMessageType::Existing);
 				const auto history = item->history();
 				if (!uniquePeers || !hasHistoryInResults(history)) {
@@ -2025,7 +2041,7 @@ bool InnerWidget::searchReceived(
 							_searchInChat,
 							item));
 					if (uniquePeers && !history->unreadCountKnown()) {
-						history->session().api().requestDialogEntry(history);
+						history->owner().histories().requestDialogEntry(history);
 					}
 				}
 				lastDateFound = lastDate;
@@ -2260,12 +2276,7 @@ void InnerWidget::refreshSearchInChatLabel() {
 			dialog,
 			Ui::DialogTextOptions());
 	}
-	const auto from = [&] {
-		if (const auto from = _searchFromUser) {
-			return App::peerName(from);
-		}
-		return QString();
-	}();
+	const auto from = _searchFromUser ? _searchFromUser->name : QString();
 	if (!from.isEmpty()) {
 		const auto fromUserText = tr::lng_dlg_search_from(
 			tr::now,
@@ -2454,7 +2465,6 @@ void InnerWidget::loadPeerPhotos() {
 
 	auto yFrom = _visibleTop;
 	auto yTo = _visibleTop + (_visibleBottom - _visibleTop) * (PreloadHeightsCount + 1);
-	session().downloader().clearPriorities();
 	if (_state == WidgetState::Default) {
 		auto otherStart = shownDialogs()->size() * st::dialogsRowHeight;
 		if (yFrom < otherStart) {
@@ -2889,7 +2899,7 @@ void InnerWidget::userOnlineUpdated(const Notify::PeerUpdate &update) {
 		const auto visible = (top < _visibleBottom)
 			&& (top + st::dialogsRowHeight > _visibleTop);
 		row->setOnline(
-			Data::OnlineTextActive(user, unixtime()),
+			Data::OnlineTextActive(user, base::unixtime::now()),
 			visible ? Fn<void()>(crl::guard(this, repaint)) : nullptr);
 	}
 }
@@ -2944,6 +2954,16 @@ void InnerWidget::setupShortcuts() {
 			App::main()->choosePeer(session().userPeerId(), ShowAtUnreadMsgId);
 			return true;
 		});
+		request->check(Command::ShowArchive) && request->handle([=] {
+			const auto folder = session().data().folderLoaded(
+				Data::Folder::kId);
+			if (folder && !folder->chatsList()->empty()) {
+				_controller->openFolder(folder);
+				Ui::hideSettingsAndLayer();
+				return true;
+			}
+			return false;
+		});
 
 		static const auto kPinned = {
 			Command::ChatPinned1,
@@ -2952,7 +2972,7 @@ void InnerWidget::setupShortcuts() {
 			Command::ChatPinned4,
 			Command::ChatPinned5,
 		};
-		auto &&pinned = ranges::view::zip(kPinned, ranges::view::ints(0));
+		auto &&pinned = ranges::view::zip(kPinned, ranges::view::ints(0, ranges::unreachable));
 		for (const auto [command, index] : pinned) {
 			request->check(command) && request->handle([=, index = index] {
 				const auto list = session().data().chatsList()->indexed();
@@ -2980,11 +3000,16 @@ RowDescriptor InnerWidget::computeJump(
 		const RowDescriptor &to,
 		JumpSkip skip) {
 	auto result = to;
-	if (session().supportMode() && result.key) {
+	if (result.key) {
 		const auto down = (skip == JumpSkip::NextOrEnd)
 			|| (skip == JumpSkip::NextOrOriginal);
-		while (!result.key.entry()->chatListUnreadCount()
-			&& !result.key.entry()->chatListUnreadMark()) {
+		const auto needSkip = [&] {
+			return (result.key.folder() != nullptr)
+				|| (session().supportMode()
+					&& !result.key.entry()->chatListUnreadCount()
+					&& !result.key.entry()->chatListUnreadMark());
+		};
+		while (needSkip()) {
 			const auto next = down
 				? chatListEntryAfter(result)
 				: chatListEntryBefore(result);

@@ -11,18 +11,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "history/history_location_manager.h"
 #include "history/view/history_view_element.h"
-#include "history/media/history_media_photo.h"
-#include "history/media/history_media_sticker.h"
-#include "history/media/history_media_gif.h"
-#include "history/media/history_media_video.h"
-#include "history/media/history_media_document.h"
-#include "history/media/history_media_contact.h"
-#include "history/media/history_media_location.h"
-#include "history/media/history_media_game.h"
-#include "history/media/history_media_invoice.h"
-#include "history/media/history_media_call.h"
-#include "history/media/history_media_web_page.h"
-#include "history/media/history_media_poll.h"
+#include "history/view/media/history_view_photo.h"
+#include "history/view/media/history_view_sticker.h"
+#include "history/view/media/history_view_gif.h"
+#include "history/view/media/history_view_document.h"
+#include "history/view/media/history_view_contact.h"
+#include "history/view/media/history_view_location.h"
+#include "history/view/media/history_view_game.h"
+#include "history/view/media/history_view_invoice.h"
+#include "history/view/media/history_view_call.h"
+#include "history/view/media/history_view_web_page.h"
+#include "history/view/media/history_view_poll.h"
+#include "history/view/media/history_view_theme_document.h"
 #include "ui/image/image.h"
 #include "ui/image/image_source.h"
 #include "ui/text_options.h"
@@ -36,9 +36,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_web_page.h"
 #include "data/data_poll.h"
 #include "data/data_channel.h"
+#include "data/data_file_origin.h"
 #include "lang/lang_keys.h"
 #include "layout.h"
 #include "storage/file_upload.h"
+#include "app.h"
 
 namespace Data {
 namespace {
@@ -237,7 +239,7 @@ TextWithEntities Media::consumedMessageText() const {
 	return {};
 }
 
-std::unique_ptr<HistoryMedia> Media::createView(
+std::unique_ptr<HistoryView::Media> Media::createView(
 		not_null<HistoryView::Element*> message) {
 	return createView(message, message->data());
 }
@@ -471,17 +473,17 @@ bool MediaPhoto::updateSentMedia(const MTPMessageMedia &media) {
 	return true;
 }
 
-std::unique_ptr<HistoryMedia> MediaPhoto::createView(
+std::unique_ptr<HistoryView::Media> MediaPhoto::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
 	if (_chat) {
-		return std::make_unique<HistoryPhoto>(
+		return std::make_unique<HistoryView::Photo>(
 			message,
 			_chat,
 			_photo,
 			st::msgServicePhotoWidth);
 	}
-	return std::make_unique<HistoryPhoto>(
+	return std::make_unique<HistoryView::Photo>(
 		message,
 		realParent,
 		_photo);
@@ -611,7 +613,10 @@ QString MediaFile::notificationText() const {
 QString MediaFile::pinnedTextSubstring() const {
 	if (const auto sticker = _document->sticker()) {
 		if (!_emoji.isEmpty()) {
-			return tr::lng_action_pinned_media_emoji_sticker(tr::now, lt_emoji, _emoji);
+			return tr::lng_action_pinned_media_emoji_sticker(
+				tr::now,
+				lt_emoji,
+				_emoji);
 		}
 		return tr::lng_action_pinned_media_sticker(tr::now);
 	} else if (_document->isAnimation()) {
@@ -637,7 +642,10 @@ TextForMimeData MediaFile::clipboardText() const {
 			: QString();
 		if (const auto sticker = _document->sticker()) {
 			if (!_emoji.isEmpty()) {
-				return tr::lng_in_dlg_sticker_emoji(tr::now, lt_emoji, _emoji);
+				return tr::lng_in_dlg_sticker_emoji(
+					tr::now,
+					lt_emoji,
+					_emoji);
 			}
 			return tr::lng_in_dlg_sticker(tr::now);
 		} else if (_document->isAnimation()) {
@@ -759,20 +767,24 @@ bool MediaFile::updateSentMedia(const MTPMessageMedia &media) {
 	return true;
 }
 
-std::unique_ptr<HistoryMedia> MediaFile::createView(
+std::unique_ptr<HistoryView::Media> MediaFile::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
 	if (_document->sticker()) {
-		return std::make_unique<HistorySticker>(message, _document);
-	} else if (_document->isAnimation()) {
-		return std::make_unique<HistoryGif>(message, _document);
-	} else if (_document->isVideoFile()) {
-		return std::make_unique<HistoryVideo>(
+		return std::make_unique<HistoryView::UnwrappedMedia>(
+			message,
+			std::make_unique<HistoryView::Sticker>(message, _document));
+	} else if (_document->isAnimation() || _document->isVideoFile()) {
+		return std::make_unique<HistoryView::Gif>(
 			message,
 			realParent,
 			_document);
+	} else if (_document->isTheme() && _document->hasThumbnail()) {
+		return std::make_unique<HistoryView::ThemeDocument>(
+			message,
+			_document);
 	}
-	return std::make_unique<HistoryDocument>(message, _document);
+	return std::make_unique<HistoryView::Document>(message, _document);
 }
 
 MediaContact::MediaContact(
@@ -818,7 +830,9 @@ QString MediaContact::pinnedTextSubstring() const {
 }
 
 TextForMimeData MediaContact::clipboardText() const {
-	const auto text = qsl("[ ") + tr::lng_in_dlg_contact(tr::now) + qsl(" ]\n")
+	const auto text = qsl("[ ")
+		+ tr::lng_in_dlg_contact(tr::now)
+		+ qsl(" ]\n")
 		+ tr::lng_full_name(
 			tr::now,
 			lt_first_name,
@@ -850,10 +864,10 @@ bool MediaContact::updateSentMedia(const MTPMessageMedia &media) {
 	return true;
 }
 
-std::unique_ptr<HistoryMedia> MediaContact::createView(
+std::unique_ptr<HistoryView::Media> MediaContact::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryContact>(
+	return std::make_unique<HistoryView::Contact>(
 		message,
 		_contact.userId,
 		_contact.firstName,
@@ -929,10 +943,10 @@ bool MediaLocation::updateSentMedia(const MTPMessageMedia &media) {
 	return false;
 }
 
-std::unique_ptr<HistoryMedia> MediaLocation::createView(
+std::unique_ptr<HistoryView::Media> MediaLocation::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryLocation>(
+	return std::make_unique<HistoryView::Location>(
 		message,
 		_location,
 		_title,
@@ -988,10 +1002,10 @@ bool MediaCall::updateSentMedia(const MTPMessageMedia &media) {
 	return false;
 }
 
-std::unique_ptr<HistoryMedia> MediaCall::createView(
+std::unique_ptr<HistoryView::Media> MediaCall::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryCall>(message, &_call);
+	return std::make_unique<HistoryView::Call>(message, &_call);
 }
 
 QString MediaCall::Text(
@@ -1083,10 +1097,10 @@ bool MediaWebPage::updateSentMedia(const MTPMessageMedia &media) {
 	return false;
 }
 
-std::unique_ptr<HistoryMedia> MediaWebPage::createView(
+std::unique_ptr<HistoryView::Media> MediaWebPage::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryWebPage>(message, _page);
+	return std::make_unique<HistoryView::WebPage>(message, _page);
 }
 
 MediaGame::MediaGame(
@@ -1174,10 +1188,13 @@ bool MediaGame::updateSentMedia(const MTPMessageMedia &media) {
 	return true;
 }
 
-std::unique_ptr<HistoryMedia> MediaGame::createView(
+std::unique_ptr<HistoryView::Media> MediaGame::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryGame>(message, _game, _consumedText);
+	return std::make_unique<HistoryView::Game>(
+		message,
+		_game,
+		_consumedText);
 }
 
 MediaInvoice::MediaInvoice(
@@ -1236,10 +1253,10 @@ bool MediaInvoice::updateSentMedia(const MTPMessageMedia &media) {
 	return true;
 }
 
-std::unique_ptr<HistoryMedia> MediaInvoice::createView(
+std::unique_ptr<HistoryView::Media> MediaInvoice::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryInvoice>(message, &_invoice);
+	return std::make_unique<HistoryView::Invoice>(message, &_invoice);
 }
 
 MediaPoll::MediaPoll(
@@ -1285,6 +1302,9 @@ TextForMimeData MediaPoll::clipboardText() const {
 }
 
 QString MediaPoll::errorTextForForward(not_null<PeerData*> peer) const {
+	if (_poll->publicVotes() && peer->isChannel() && !peer->isMegagroup()) {
+		return tr::lng_restricted_send_public_polls(tr::now);
+	}
 	return Data::RestrictionError(
 		peer,
 		ChatRestriction::f_send_polls
@@ -1299,10 +1319,10 @@ bool MediaPoll::updateSentMedia(const MTPMessageMedia &media) {
 	return false;
 }
 
-std::unique_ptr<HistoryMedia> MediaPoll::createView(
+std::unique_ptr<HistoryView::Media> MediaPoll::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
-	return std::make_unique<HistoryPoll>(message, _poll);
+	return std::make_unique<HistoryView::Poll>(message, _poll);
 }
 
 } // namespace Data

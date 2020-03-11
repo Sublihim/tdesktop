@@ -14,33 +14,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/assertion.h"
 #include "base/bytes.h"
 
+#include <crl/crl_time.h>
 #include <QtCore/QReadWriteLock>
 #include <QtCore/QRegularExpression>
 #include <QtNetwork/QNetworkProxy>
-
 #include <cmath>
 #include <set>
 
 #define qsl(s) QStringLiteral(s)
 
 namespace base {
-
-template <typename D, typename T>
-inline constexpr D up_cast(T object) {
-	using DV = std::decay_t<decltype(*D())>;
-	using TV = std::decay_t<decltype(*T())>;
-	if constexpr (std::is_base_of_v<DV, TV>) {
-		return object;
-	} else {
-		return nullptr;
-	}
-}
-
-template <typename T>
-using set_of_unique_ptr = std::set<std::unique_ptr<T>, base::pointer_comparator<T>>;
-
-template <typename T>
-using set_of_shared_ptr = std::set<std::shared_ptr<T>, base::pointer_comparator<T>>;
 
 template <typename Value, typename From, typename Till>
 inline bool in_range(Value &&value, From &&from, Till &&till) {
@@ -55,12 +38,6 @@ inline bool in_range(Value &&value, From &&from, Till &&till) {
 // while "for_const (T *p, v)" won't and "for_const (T *&p, v)" won't compile
 #define for_const(range_declaration, range_expression) for (range_declaration : std::as_const(range_expression))
 
-template <typename Lambda>
-inline void InvokeQueued(const QObject *context, Lambda &&lambda) {
-	QObject proxy;
-	QObject::connect(&proxy, &QObject::destroyed, context, std::forward<Lambda>(lambda), Qt::QueuedConnection);
-}
-
 static const int32 ScrollMax = INT_MAX;
 
 extern uint64 _SharedMemoryLocation[];
@@ -69,46 +46,6 @@ T *SharedMemoryLocation() {
 	static_assert(N < 4, "Only 4 shared memory locations!");
 	return reinterpret_cast<T*>(_SharedMemoryLocation + N);
 }
-
-// see https://github.com/boostcon/cppnow_presentations_2012/blob/master/wed/schurr_cpp11_tools_for_class_authors.pdf
-class str_const { // constexpr string
-public:
-	template<std::size_t N>
-	constexpr str_const(const char(&a)[N]) : _str(a), _size(N - 1) {
-	}
-	constexpr char operator[](std::size_t n) const {
-		return (n < _size) ? _str[n] :
-#ifndef OS_MAC_OLD
-			throw std::out_of_range("");
-#else // OS_MAC_OLD
-			throw std::exception();
-#endif // OS_MAC_OLD
-	}
-	constexpr std::size_t size() const { return _size; }
-	const char *c_str() const { return _str; }
-
-private:
-	const char* const _str;
-	const std::size_t _size;
-
-};
-
-inline QString str_const_toString(const str_const &str) {
-	return QString::fromUtf8(str.c_str(), str.size());
-}
-
-inline QByteArray str_const_toByteArray(const str_const &str) {
-	return QByteArray::fromRawData(str.c_str(), str.size());
-}
-
-void unixtimeInit();
-void unixtimeSet(TimeId serverTime, bool force = false);
-TimeId unixtime();
-uint64 msgid();
-int GetNextRequestId();
-
-QDateTime ParseDateTime(TimeId serverTime);
-TimeId ServerTimeFromParsed(const QDateTime &date);
 
 inline void mylocaltime(struct tm * _Tm, const time_t * _Time) {
 #ifdef Q_OS_WIN
@@ -146,8 +83,6 @@ private:
 	uchar _digest[16];
 
 };
-
-int32 hashCrc32(const void *data, uint32 len);
 
 int32 *hashSha1(const void *data, uint32 len, void *dest); // dest - ptr to 20 bytes, returns (int32*)dest
 inline std::array<char, 20> hashSha1(const void *data, int size) {
@@ -189,61 +124,6 @@ T rand_value() {
 	return result;
 }
 
-inline void memset_rand_bad(void *data, uint32 len) {
-	for (uchar *i = reinterpret_cast<uchar*>(data), *e = i + len; i != e; ++i) {
-		*i = uchar(rand() & 0xFF);
-	}
-}
-
-template <typename T>
-inline void memsetrnd_bad(T &value) {
-	memset_rand_bad(&value, sizeof(value));
-}
-
-class ReadLockerAttempt {
-public:
-	ReadLockerAttempt(not_null<QReadWriteLock*> lock) : _lock(lock), _locked(_lock->tryLockForRead()) {
-	}
-	ReadLockerAttempt(const ReadLockerAttempt &other) = delete;
-	ReadLockerAttempt &operator=(const ReadLockerAttempt &other) = delete;
-	ReadLockerAttempt(ReadLockerAttempt &&other) : _lock(other._lock), _locked(base::take(other._locked)) {
-	}
-	ReadLockerAttempt &operator=(ReadLockerAttempt &&other) {
-		_lock = other._lock;
-		_locked = base::take(other._locked);
-		return *this;
-	}
-	~ReadLockerAttempt() {
-		if (_locked) {
-			_lock->unlock();
-		}
-	}
-
-	operator bool() const {
-		return _locked;
-	}
-
-private:
-	not_null<QReadWriteLock*> _lock;
-	bool _locked = false;
-
-};
-
-inline QString fromUtf8Safe(const char *str, int32 size = -1) {
-	if (!str || !size) return QString();
-	if (size < 0) size = int32(strlen(str));
-	QString result(QString::fromUtf8(str, size));
-	QByteArray back = result.toUtf8();
-	if (back.size() != size || memcmp(back.constData(), str, size)) return QString::fromLocal8Bit(str, size);
-	return result;
-}
-
-inline QString fromUtf8Safe(const QByteArray &str) {
-	return fromUtf8Safe(str.constData(), str.size());
-}
-
-static const QRegularExpression::PatternOptions reMultiline(QRegularExpression::DotMatchesEverythingOption | QRegularExpression::MultilineOption);
-
 template <typename T>
 inline T snap(const T &v, const T &_min, const T &_max) {
 	return (v < _min) ? _min : ((v > _max) ? _max : v);
@@ -263,43 +143,6 @@ enum DBIWorkMode {
 	dbiwmTrayOnly = 1,
 	dbiwmWindowOnly = 2,
 };
-
-struct ProxyData {
-	enum class Settings {
-		System,
-		Enabled,
-		Disabled,
-	};
-	enum class Type {
-		None,
-		Socks5,
-		Http,
-		Mtproto,
-	};
-
-	Type type = Type::None;
-	QString host;
-	uint32 port = 0;
-	QString user, password;
-
-	std::vector<QString> resolvedIPs;
-	crl::time resolvedExpireAt = 0;
-
-	bool valid() const;
-	bool supportsCalls() const;
-	bool tryCustomResolve() const;
-	bytes::vector secretFromMtprotoPassword() const;
-	explicit operator bool() const;
-	bool operator==(const ProxyData &other) const;
-	bool operator!=(const ProxyData &other) const;
-
-	static bool ValidMtprotoPassword(const QString &secret);
-	static int MaxMtprotoPasswordLength();
-
-};
-
-ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex = 0);
-QNetworkProxy ToNetworkProxy(const ProxyData &proxy);
 
 static const int MatrixRowShift = 40000;
 

@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "observer_peer.h"
 #include "mainwidget.h"
-#include "auth_session.h"
+#include "main/main_session.h"
 #include "storage/localstorage.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
@@ -23,14 +23,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_message.h"
 #include "history/history.h"
 #include "calls/calls_instance.h"
+#include "base/unixtime.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/vertical_layout.h"
+#include "ui/wrap/slide_wrap.h"
 #include "ui/image/image_prepare.h"
 #include "window/section_widget.h"
+#include "window/window_session_controller.h"
 #include "boxes/peer_list_controllers.h"
 #include "boxes/confirm_box.h"
 #include "settings/settings_privacy_security.h"
+#include "facades.h"
+#include "app.h"
 #include "styles/style_history.h"
 #include "styles/style_boxes.h"
 #include "styles/style_settings.h"
@@ -44,6 +49,10 @@ class BlockUserBoxController
 	: public ChatsListBoxController
 	, private base::Subscriber {
 public:
+	explicit BlockUserBoxController(
+		not_null<Window::SessionNavigation*> navigation);
+
+	Main::Session &session() const override;
 	void rowClicked(not_null<PeerListRow*> row) override;
 
 	void setBlockUserCallback(Fn<void(not_null<UserData*> user)> callback) {
@@ -61,9 +70,20 @@ protected:
 private:
 	void updateIsBlocked(not_null<PeerListRow*> row, UserData *user) const;
 
+	const not_null<Window::SessionNavigation*> _navigation;
 	Fn<void(not_null<UserData*> user)> _blockUserCallback;
 
 };
+
+BlockUserBoxController::BlockUserBoxController(
+	not_null<Window::SessionNavigation*> navigation)
+: ChatsListBoxController(navigation)
+, _navigation(navigation) {
+}
+
+Main::Session &BlockUserBoxController::session() const {
+	return _navigation->session();
+}
 
 void BlockUserBoxController::prepareViewHook() {
 	delegate()->peerListSetTitle(tr::lng_blocked_list_add_title());
@@ -125,7 +145,7 @@ AdminLog::OwnedItem GenerateForwardedItem(
 			MTP_flags(FwdFlag::f_from_id),
 			MTP_int(history->session().userId()),
 			MTPstring(), // from_name
-			MTP_int(unixtime()),
+			MTP_int(base::unixtime::now()),
 			MTPint(), // channel_id
 			MTPint(), // channel_post
 			MTPstring(), // post_author
@@ -133,7 +153,7 @@ AdminLog::OwnedItem GenerateForwardedItem(
 			MTPint()), // saved_from_msg_id
 		MTPint(), // via_bot_id
 		MTPint(), // reply_to_msg_id,
-		MTP_int(unixtime()), // date
+		MTP_int(base::unixtime::now()), // date
 		MTP_string(text),
 		MTPMessageMedia(),
 		MTPReplyMarkup(),
@@ -141,9 +161,13 @@ AdminLog::OwnedItem GenerateForwardedItem(
 		MTPint(), // views
 		MTPint(), // edit_date
 		MTPstring(), // post_author
-		MTPlong() // grouped_id
+		MTPlong(), // grouped_id
+		//MTPMessageReactions(),
+		MTPVector<MTPRestrictionReason>()
 	).match([&](const MTPDmessage &data) {
-		return history->owner().makeMessage(history, data);
+		return history->makeMessage(
+			data,
+			MTPDmessage_ClientFlag::f_fake_history_item);
 	}, [](auto &&) -> not_null<HistoryMessage*> {
 		Unexpected("Type in GenerateForwardedItem.");
 	});
@@ -152,6 +176,16 @@ AdminLog::OwnedItem GenerateForwardedItem(
 }
 
 } // namespace
+
+BlockedBoxController::BlockedBoxController(
+	not_null<Window::SessionController*> window)
+: _window(window)
+, _api(_window->session().api().instance()) {
+}
+
+Main::Session &BlockedBoxController::session() const {
+	return _window->session();
+}
 
 void BlockedBoxController::prepare() {
 	delegate()->peerListSetTitle(tr::lng_blocked_list_title());
@@ -165,7 +199,7 @@ void BlockedBoxController::prepare() {
 	}));
 
 	_loadRequestId = -1;
-	Auth().api().blockedUsersSlice(
+	_window->session().api().blockedUsersSlice(
 	) | rpl::take(
 		1
 	) | rpl::start_with_next([=](const ApiWrap::BlockedUsersSlice &result) {
@@ -186,14 +220,14 @@ void BlockedBoxController::loadMoreRows() {
 		return;
 	}
 
-	_loadRequestId = request(MTPcontacts_GetBlocked(
+	_loadRequestId = _api.request(MTPcontacts_GetBlocked(
 		MTP_int(_offset),
 		MTP_int(kBlockedPerPage)
 	)).done([=](const MTPcontacts_Blocked &result) {
 		_loadRequestId = 0;
 
-		auto handleContactsBlocked = [](auto &list) {
-			Auth().data().processUsers(list.vusers());
+		auto handleContactsBlocked = [&](auto &list) {
+			_window->session().data().processUsers(list.vusers());
 			return list.vblocked().v;
 		};
 		switch (result.type()) {
@@ -221,7 +255,7 @@ void BlockedBoxController::rowActionClicked(not_null<PeerListRow*> row) {
 	auto user = row->peer()->asUser();
 	Expects(user != nullptr);
 
-	Auth().api().unblockUser(user);
+	_window->session().api().unblockUser(user);
 }
 
 void BlockedBoxController::receivedUsers(const QVector<MTPContactBlocked> &result) {
@@ -232,7 +266,7 @@ void BlockedBoxController::receivedUsers(const QVector<MTPContactBlocked> &resul
 	_offset += result.size();
 	for (const auto &item : result) {
 		item.match([&](const MTPDcontactBlocked &data) {
-			if (const auto user = Auth().data().userLoaded(data.vuser_id().v)) {
+			if (const auto user = _window->session().data().userLoaded(data.vuser_id().v)) {
 				appendRow(user);
 				user->setIsBlocked(true);
 			}
@@ -253,18 +287,20 @@ void BlockedBoxController::handleBlockedEvent(not_null<UserData*> user) {
 	}
 }
 
-void BlockedBoxController::BlockNewUser() {
-	auto controller = std::make_unique<BlockUserBoxController>();
-	auto initBox = [controller = controller.get()](not_null<PeerListBox*> box) {
-		controller->setBlockUserCallback([box](not_null<UserData*> user) {
-			Auth().api().blockUser(user);
+void BlockedBoxController::BlockNewUser(
+		not_null<Window::SessionController*> window) {
+	auto controller = std::make_unique<BlockUserBoxController>(window);
+	auto initBox = [=, controller = controller.get()](
+			not_null<PeerListBox*> box) {
+		controller->setBlockUserCallback([=](not_null<UserData*> user) {
+			window->session().api().blockUser(user);
 			box->closeBox();
 		});
 		box->addButton(tr::lng_cancel(), [box] { box->closeBox(); });
 	};
 	Ui::show(
 		Box<PeerListBox>(std::move(controller), std::move(initBox)),
-		LayerOption::KeepOther);
+		Ui::LayerOption::KeepOther);
 }
 
 bool BlockedBoxController::appendRow(not_null<UserData*> user) {
@@ -292,13 +328,13 @@ std::unique_ptr<PeerListRow> BlockedBoxController::createRow(
 			return App::formatPhone(user->phone());
 		} else if (!user->username.isEmpty()) {
 			return '@' + user->username;
-		} else if (user->botInfo) {
+		} else if (user->isBot()) {
 			return tr::lng_status_bot(tr::now);
 		}
 		return tr::lng_blocked_list_unknown_phone(tr::now);
 	}();
 	row->setCustomStatus(status);
-	return std::move(row);
+	return row;
 }
 
 ApiWrap::Privacy::Key PhoneNumberPrivacyController::key() {
@@ -318,7 +354,16 @@ rpl::producer<QString> PhoneNumberPrivacyController::optionsTitleKey() {
 }
 
 rpl::producer<QString> PhoneNumberPrivacyController::warning() {
-	return tr::lng_edit_privacy_phone_number_warning();
+	using namespace rpl::mappers;
+	return rpl::combine(
+		_phoneNumberOption.value(),
+		_addedByPhone.value(),
+		(_1 == Option::Nobody) && (_2 != Option::Everyone)
+	) | rpl::map([](bool onlyContactsSee) {
+		return onlyContactsSee
+			? tr::lng_edit_privacy_phone_number_contacts()
+			: tr::lng_edit_privacy_phone_number_warning();
+	}) | rpl::flatten_latest();
 }
 
 rpl::producer<QString> PhoneNumberPrivacyController::exceptionButtonTextKey(
@@ -343,6 +388,74 @@ rpl::producer<QString> PhoneNumberPrivacyController::exceptionBoxTitle(
 
 rpl::producer<QString> PhoneNumberPrivacyController::exceptionsDescription() {
 	return tr::lng_edit_privacy_phone_number_exceptions();
+}
+
+object_ptr<Ui::RpWidget> PhoneNumberPrivacyController::setupMiddleWidget(
+		not_null<Window::SessionController*> controller,
+		not_null<QWidget*> parent,
+		rpl::producer<Option> optionValue) {
+	const auto key = ApiWrap::Privacy::Key::AddedByPhone;
+	controller->session().api().reloadPrivacy(key);
+
+	_phoneNumberOption = std::move(optionValue);
+
+	auto widget = object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+		parent,
+		object_ptr<Ui::VerticalLayout>(parent));
+
+	const auto container = widget->entity();
+	AddDivider(container);
+	AddSkip(container);
+	AddSubsectionTitle(container, tr::lng_edit_privacy_phone_number_find());
+	const auto group = std::make_shared<Ui::RadioenumGroup<Option>>();
+	group->setChangedCallback([=](Option value) {
+		_addedByPhone = value;
+	});
+	controller->session().api().privacyValue(
+		key
+	) | rpl::take(
+		1
+	) | rpl::start_with_next([=](const ApiWrap::Privacy &value) {
+		group->setValue(value.option);
+	}, widget->lifetime());
+
+	const auto addOption = [&](Option option) {
+		return EditPrivacyBox::AddOption(container, this, group, option);
+	};
+	addOption(Option::Everyone);
+	addOption(Option::Contacts);
+	AddSkip(container);
+
+	using namespace rpl::mappers;
+	widget->toggleOn(_phoneNumberOption.value(
+	) | rpl::map(
+		_1 == Option::Nobody
+	));
+
+	_saveAdditional = [=] {
+		const auto value = [&] {
+			switch (group->value()) {
+			case Option::Everyone: return MTP_inputPrivacyValueAllowAll();
+			default: return MTP_inputPrivacyValueAllowContacts();
+			}
+		}();
+		controller->session().api().savePrivacy(
+			MTP_inputPrivacyKeyAddedByPhone(),
+			QVector<MTPInputPrivacyRule>(1, value));
+	};
+
+	return widget;
+}
+
+void PhoneNumberPrivacyController::saveAdditional() {
+	if (_saveAdditional) {
+		_saveAdditional();
+	}
+}
+
+LastSeenPrivacyController::LastSeenPrivacyController(
+	not_null<::Main::Session*> session)
+: _session(session) {
 }
 
 ApiWrap::Privacy::Key LastSeenPrivacyController::key() {
@@ -389,15 +502,18 @@ rpl::producer<QString> LastSeenPrivacyController::exceptionsDescription() {
 	return tr::lng_edit_privacy_lastseen_exceptions();
 }
 
-void LastSeenPrivacyController::confirmSave(bool someAreDisallowed, FnMut<void()> saveCallback) {
-	if (someAreDisallowed && !Auth().settings().lastSeenWarningSeen()) {
+void LastSeenPrivacyController::confirmSave(
+		bool someAreDisallowed,
+		FnMut<void()> saveCallback) {
+	if (someAreDisallowed && !_session->settings().lastSeenWarningSeen()) {
+		const auto session = _session;
 		auto weakBox = std::make_shared<QPointer<ConfirmBox>>();
-		auto callback = [weakBox, saveCallback = std::move(saveCallback)]() mutable {
+		auto callback = [=, saveCallback = std::move(saveCallback)]() mutable {
 			if (auto box = *weakBox) {
 				box->closeBox();
 			}
 			saveCallback();
-			Auth().settings().setLastSeenWarningSeen(true);
+			session->settings().setLastSeenWarningSeen(true);
 			Local::writeUserSettings();
 		};
 		auto box = Box<ConfirmBox>(
@@ -405,7 +521,7 @@ void LastSeenPrivacyController::confirmSave(bool someAreDisallowed, FnMut<void()
 			tr::lng_continue(tr::now),
 			tr::lng_cancel(tr::now),
 			std::move(callback));
-		*weakBox = Ui::show(std::move(box), LayerOption::KeepOther);
+		*weakBox = Ui::show(std::move(box), Ui::LayerOption::KeepOther);
 	} else {
 		saveCallback();
 	}
@@ -493,6 +609,7 @@ rpl::producer<QString> CallsPrivacyController::exceptionsDescription() {
 }
 
 object_ptr<Ui::RpWidget> CallsPrivacyController::setupBelowWidget(
+		not_null<Window::SessionController*> controller,
 		not_null<QWidget*> parent) {
 	auto result = object_ptr<Ui::VerticalLayout>(parent);
 	const auto content = result.data();
@@ -501,6 +618,7 @@ object_ptr<Ui::RpWidget> CallsPrivacyController::setupBelowWidget(
 	AddSkip(content);
 	AddSubsectionTitle(content, tr::lng_settings_calls_peer_to_peer_title());
 	Settings::AddPrivacyButton(
+		controller,
 		content,
 		tr::lng_settings_calls_peer_to_peer_button(),
 		ApiWrap::Privacy::Key::CallsPeer2Peer,
@@ -562,6 +680,11 @@ rpl::producer<QString> CallsPeer2PeerPrivacyController::exceptionsDescription() 
 	return tr::lng_edit_privacy_calls_p2p_exceptions();
 }
 
+ForwardsPrivacyController::ForwardsPrivacyController(
+	not_null<::Main::Session*> session)
+: _session(session) {
+}
+
 ApiWrap::Privacy::Key ForwardsPrivacyController::key() {
 	return Key::Forwards;
 }
@@ -612,7 +735,7 @@ object_ptr<Ui::RpWidget> ForwardsPrivacyController::setupAboveWidget(
 
 	auto message = GenerateForwardedItem(
 		delegate(),
-		Auth().data().history(
+		_session->data().history(
 			peerFromUser(PeerData::kServiceNotificationsId)),
 		tr::lng_edit_privacy_forwards_sample_message(tr::now));
 	const auto view = message.get();
@@ -676,7 +799,7 @@ void ForwardsPrivacyController::PaintForwardedTooltip(
 	const auto phrase = tr::lng_forwarded(
 		tr::now,
 		lt_user,
-		App::peerName(view->data()->history()->session().user()));
+		view->data()->history()->session().user()->name);
 	const auto kReplacementPosition = QChar(0x0001);
 	const auto possiblePosition = tr::lng_forwarded(
 		tr::now,

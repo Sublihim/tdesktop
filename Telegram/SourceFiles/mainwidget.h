@@ -13,14 +13,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/animations.h"
 #include "media/player/media_player_float.h"
 #include "data/data_pts_waiter.h"
+#include "mtproto/mtproto_rpc_sender.h"
 
-class AuthSession;
 struct HistoryMessageMarkupButton;
 class MainWindow;
 class ConfirmBox;
 class HistoryWidget;
 class StackItem;
 struct FileLoadResult;
+class History;
+
+namespace Api {
+struct SendAction;
+} // namespace Api
+
+namespace Main {
+class Session;
+} // namespace Main
 
 namespace Notify {
 struct PeerUpdate;
@@ -35,6 +44,7 @@ struct RowDescriptor;
 class Row;
 class Key;
 class Widget;
+enum class Mode;
 } // namespace Dialogs
 
 namespace Media {
@@ -99,12 +109,14 @@ public:
 
 	MainWidget(QWidget *parent, not_null<Window::SessionController*> controller);
 
-	AuthSession &session() const;
+	[[nodiscard]] Main::Session &session() const;
 
-	bool isMainSectionShown() const;
-	bool isThirdSectionShown() const;
+	[[nodiscard]] bool isMainSectionShown() const;
+	[[nodiscard]] bool isThirdSectionShown() const;
 
-	int contentScrollAddToY() const;
+	[[nodiscard]] int contentScrollAddToY() const;
+
+	void returnTabbedSelector();
 
 	void showAnimated(const QPixmap &bgAnimCache, bool back = false);
 
@@ -121,7 +133,6 @@ public:
 	void incrementSticker(DocumentData *sticker);
 
 	void activate();
-	void updateReceived(const mtpPrime *from, const mtpPrime *end);
 
 	void refreshDialog(Dialogs::Key key);
 	void removeDialog(Dialogs::Key key);
@@ -137,10 +148,7 @@ public:
 	bool deleteChannelFailed(const RPCError &error);
 	void historyToDown(History *hist);
 	void dialogsToUp();
-	void newUnreadMsg(
-		not_null<History*> history,
-		not_null<HistoryItem*> item);
-	void markActiveHistoryAsRead();
+	void checkHistoryActivation();
 
 	PeerData *peer();
 
@@ -165,8 +173,7 @@ public:
 	void updateOnlineDisplayIn(int32 msecs);
 
 	bool isActive() const;
-	bool doWeReadServerHistory() const;
-	bool doWeReadMentions() const;
+	[[nodiscard]] bool doWeMarkAsRead() const;
 	bool lastWasOnline() const;
 	crl::time lastSetOnline() const;
 
@@ -194,8 +201,6 @@ public:
 	bool selectingPeer() const;
 
 	void deletePhotoLayer(PhotoData *photo);
-
-	bool sendMessageFail(const RPCError &error);
 
 	// While HistoryInner is not HistoryView::ListWidget.
 	crl::time highlightStartTime(not_null<const HistoryItem*> item) const;
@@ -230,7 +235,7 @@ public:
 	void pushReplyReturn(not_null<HistoryItem*> item);
 
 	void cancelForwarding(not_null<History*> history);
-	void finishForwarding(not_null<History*> history);
+	void finishForwarding(Api::SendAction action);
 
 	// Does offerPeer or showPeerHistory.
 	void choosePeer(PeerId peerId, MsgId showAtMsgId);
@@ -387,6 +392,8 @@ private:
 	bool failChannelDifference(ChannelData *channel, const RPCError &err);
 	void failDifferenceStartTimerFor(ChannelData *channel);
 
+	void mtpUpdateReceived(const MTPUpdates &updates);
+	void mtpNewSessionCreated();
 	void feedUpdateVector(
 		const MTPVector<MTPUpdate> &updates,
 		bool skipMessageIds = false);
@@ -541,3 +548,7 @@ private:
 	int _firstColumnResizingShift = 0;
 
 };
+
+namespace App {
+MainWidget *main();
+} // namespace App

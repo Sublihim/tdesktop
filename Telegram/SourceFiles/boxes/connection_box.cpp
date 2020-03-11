@@ -11,7 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "storage/localstorage.h"
 #include "base/qthelp_url.h"
+#include "base/call_delayed.h"
 #include "core/application.h"
+#include "main/main_account.h"
+#include "mtproto/facade.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/input_fields.h"
@@ -23,13 +26,71 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/animations.h"
 #include "ui/effects/radial_animation.h"
 #include "ui/text_options.h"
+#include "facades.h"
+#include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_info.h"
 
+#include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
+
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
+
+using ProxyData = MTP::ProxyData;
+
+class Base64UrlInput : public Ui::MaskedInputField {
+public:
+	Base64UrlInput(
+		QWidget *parent,
+		const style::InputField &st,
+		rpl::producer<QString> placeholder,
+		const QString &val);
+
+protected:
+	void correctValue(
+		const QString &was,
+		int wasCursor,
+		QString &now,
+		int &nowCursor) override;
+
+};
+
+Base64UrlInput::Base64UrlInput(
+	QWidget *parent,
+	const style::InputField &st,
+	rpl::producer<QString> placeholder,
+	const QString &val)
+: MaskedInputField(parent, st, std::move(placeholder), val) {
+	if (!QRegularExpression("^[a-zA-Z0-9_\\-]+$").match(val).hasMatch()) {
+		setText(QString());
+	}
+}
+
+void Base64UrlInput::correctValue(
+		const QString &was,
+		int wasCursor,
+		QString &now,
+		int &nowCursor) {
+	QString newText;
+	newText.reserve(now.size());
+	auto newPos = nowCursor;
+	for (auto i = 0, l = now.size(); i < l; ++i) {
+		const auto ch = now[i];
+		if ((ch >= '0' && ch <= '9')
+			|| (ch >= 'a' && ch <= 'z')
+			|| (ch >= 'A' && ch <= 'Z')
+			|| (ch == '-')
+			|| (ch == '_')) {
+			newText.append(ch);
+		} else if (i < nowCursor) {
+			--newPos;
+		}
+	}
+	setCorrectedText(now, nowCursor, newText, newPos);
+}
 
 class ProxyRow : public Ui::RippleButton {
 public:
@@ -78,7 +139,7 @@ private:
 
 };
 
-class ProxiesBox : public BoxContent {
+class ProxiesBox : public Ui::BoxContent {
 public:
 	using View = ProxiesBoxController::ItemView;
 
@@ -110,7 +171,7 @@ private:
 
 };
 
-class ProxyBox : public BoxContent {
+class ProxyBox : public Ui::BoxContent {
 public:
 	ProxyBox(
 		QWidget*,
@@ -150,7 +211,7 @@ private:
 	QPointer<Ui::PortInput> _port;
 	QPointer<Ui::InputField> _user;
 	QPointer<Ui::PasswordInput> _password;
-	QPointer<Ui::HexInput> _secret;
+	QPointer<Base64UrlInput> _secret;
 
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _credentials;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _mtprotoCredentials;
@@ -359,7 +420,7 @@ void ProxyRow::paintCheck(Painter &p) {
 	pen.setCapStyle(Qt::RoundCap);
 	p.setPen(pen);
 	p.setBrush(_st->bg);
-	const auto rect = rtlrect(QRectF(left, top, _st->diameter, _st->diameter).marginsRemoved(QMarginsF(_st->thickness / 2., _st->thickness / 2., _st->thickness / 2., _st->thickness / 2.)), outerWidth);
+	const auto rect = style::rtlrect(QRectF(left, top, _st->diameter, _st->diameter).marginsRemoved(QMarginsF(_st->thickness / 2., _st->thickness / 2., _st->thickness / 2., _st->thickness / 2.)), outerWidth);
 	if (_progress && loading.shown > 0 && anim::Disabled()) {
 		anim::DrawStaticLoading(
 			p,
@@ -378,7 +439,7 @@ void ProxyRow::paintCheck(Painter &p) {
 		p.setBrush(anim::brush(_st->untoggledFg, _st->toggledFg, toggled * set));
 
 		auto skip0 = _st->diameter / 2., skip1 = _st->skip / 10., checkSkip = skip0 * (1. - toggled) + skip1 * toggled;
-		p.drawEllipse(rtlrect(QRectF(left, top, _st->diameter, _st->diameter).marginsRemoved(QMarginsF(checkSkip, checkSkip, checkSkip, checkSkip)), outerWidth));
+		p.drawEllipse(style::rtlrect(QRectF(left, top, _st->diameter, _st->diameter).marginsRemoved(QMarginsF(checkSkip, checkSkip, checkSkip, checkSkip)), outerWidth));
 	}
 }
 
@@ -852,12 +913,11 @@ void ProxyBox::setupMtprotoCredentials(const ProxyData &data) {
 	addLabel(mtproto, tr::lng_proxy_credentials(tr::now));
 
 	auto secretWrap = object_ptr<Ui::RpWidget>(mtproto);
-	_secret = Ui::CreateChild<Ui::HexInput>(
+	_secret = Ui::CreateChild<Base64UrlInput>(
 		secretWrap.data(),
 		st::connectionUserInputField,
 		tr::lng_connection_proxy_secret_ph(),
 		(data.type == Type::Mtproto) ? data.password : QString());
-	_secret->setMaxLength(ProxyData::MaxMtprotoPasswordLength());
 	_secret->move(0, 0);
 	_secret->heightValue(
 	) | rpl::start_with_next([=, wrap = secretWrap.data()](int height) {
@@ -974,7 +1034,12 @@ void ProxiesBoxController::ShowApplyConfirmation(
 			if (const auto strong = box->data()) {
 				strong->closeBox();
 			}
-		}), LayerOption::KeepOther);
+		}), Ui::LayerOption::KeepOther);
+	} else {
+		Ui::show(Box<InformBox>(
+			(proxy.status() == ProxyData::Status::Unsupported
+				? tr::lng_proxy_unsupported(tr::now)
+				: tr::lng_proxy_invalid(tr::now))));
 	}
 }
 
@@ -990,63 +1055,60 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 	const auto type = (item.data.type == Type::Http)
 		? Variants::Http
 		: Variants::Tcp;
-	const auto mtproto = Core::App().mtp();
+	const auto mtproto = Core::App().activeAccount().mtp();
 	const auto dcId = mtproto->mainDcId();
 
 	item.state = ItemState::Checking;
-	const auto setup = [&](Checker &checker) {
-		checker = MTP::internal::AbstractConnection::Create(
+	const auto setup = [&](Checker &checker, const bytes::vector &secret) {
+		checker = MTP::details::AbstractConnection::Create(
 			mtproto,
 			type,
 			QThread::currentThread(),
+			secret,
 			item.data);
 		setupChecker(item.id, checker);
 	};
-	setup(item.checker);
 	if (item.data.type == Type::Mtproto) {
-		item.checkerv6 = nullptr;
+		const auto secret = item.data.secretFromMtprotoPassword();
+		setup(item.checker, secret);
 		item.checker->connectToServer(
 			item.data.host,
 			item.data.port,
-			item.data.secretFromMtprotoPassword(),
+			secret,
 			dcId);
+		item.checkerv6 = nullptr;
 	} else {
 		const auto options = mtproto->dcOptions()->lookup(
 			dcId,
 			MTP::DcType::Regular,
 			true);
-		const auto endpoint = options.data[Variants::IPv4][type];
-		const auto endpointv6 = options.data[Variants::IPv6][type];
-		if (endpoint.empty()) {
-			item.checker = nullptr;
-		}
-		if (Global::TryIPv6() && !endpointv6.empty()) {
-			setup(item.checkerv6);
-		} else {
-			item.checkerv6 = nullptr;
-		}
+		const auto connect = [&](
+				Checker &checker,
+				Variants::Address address) {
+			const auto &list = options.data[address][type];
+			if (list.empty()
+				|| (address == Variants::IPv6 && !Global::TryIPv6())) {
+				checker = nullptr;
+				return;
+			}
+			const auto &endpoint = list.front();
+			setup(checker, endpoint.secret);
+			checker->connectToServer(
+				QString::fromStdString(endpoint.ip),
+				endpoint.port,
+				endpoint.secret,
+				dcId);
+		};
+		connect(item.checker, Variants::IPv4);
+		connect(item.checkerv6, Variants::IPv6);
 		if (!item.checker && !item.checkerv6) {
 			item.state = ItemState::Unavailable;
-			return;
 		}
-		const auto connect = [&](
-				const Checker &checker,
-				const std::vector<MTP::DcOptions::Endpoint> &endpoints) {
-			if (checker) {
-				checker->connectToServer(
-					QString::fromStdString(endpoints.front().ip),
-					endpoints.front().port,
-					endpoints.front().secret,
-					dcId);
-			}
-		};
-		connect(item.checker, endpoint);
-		connect(item.checkerv6, endpointv6);
 	}
 }
 
 void ProxiesBoxController::setupChecker(int id, const Checker &checker) {
-	using Connection = MTP::internal::AbstractConnection;
+	using Connection = MTP::details::AbstractConnection;
 	const auto pointer = checker.get();
 	pointer->connect(pointer, &Connection::connected, [=] {
 		const auto item = findById(id);
@@ -1077,19 +1139,19 @@ void ProxiesBoxController::setupChecker(int id, const Checker &checker) {
 	pointer->connect(pointer, &Connection::error, failed);
 }
 
-object_ptr<BoxContent> ProxiesBoxController::CreateOwningBox() {
+object_ptr<Ui::BoxContent> ProxiesBoxController::CreateOwningBox() {
 	auto controller = std::make_unique<ProxiesBoxController>();
 	auto box = controller->create();
 	Ui::AttachAsChild(box, std::move(controller));
 	return box;
 }
 
-object_ptr<BoxContent> ProxiesBoxController::create() {
+object_ptr<Ui::BoxContent> ProxiesBoxController::create() {
 	auto result = Box<ProxiesBox>(this);
 	for (const auto &item : _list) {
 		updateView(item);
 	}
-	return std::move(result);
+	return result;
 }
 
 auto ProxiesBoxController::findById(int id) -> std::vector<Item>::iterator {
@@ -1192,7 +1254,7 @@ void ProxiesBoxController::setDeleted(int id, bool deleted) {
 	updateView(*item);
 }
 
-object_ptr<BoxContent> ProxiesBoxController::editItemBox(int id) {
+object_ptr<Ui::BoxContent> ProxiesBoxController::editItemBox(int id) {
 	return Box<ProxyBox>(findById(id)->data, [=](const ProxyData &result) {
 		auto i = findById(id);
 		auto j = ranges::find(
@@ -1243,7 +1305,7 @@ void ProxiesBoxController::replaceItemValue(
 	saveDelayed();
 }
 
-object_ptr<BoxContent> ProxiesBoxController::addNewItemBox() {
+object_ptr<Ui::BoxContent> ProxiesBoxController::addNewItemBox() {
 	return Box<ProxyBox>(ProxyData(), [=](const ProxyData &result) {
 		auto j = ranges::find(
 			_list,
@@ -1373,15 +1435,15 @@ void ProxiesBoxController::share(const ProxyData &proxy) {
 			? "&pass=" + qthelp::url_encode(proxy.password) : "")
 		+ ((proxy.type == Type::Mtproto && !proxy.password.isEmpty())
 			? "&secret=" + proxy.password : "");
-	QApplication::clipboard()->setText(link);
+	QGuiApplication::clipboard()->setText(link);
 	Ui::Toast::Show(tr::lng_username_copied(tr::now));
 }
 
 ProxiesBoxController::~ProxiesBoxController() {
 	if (_saveTimer.isActive()) {
-		App::CallDelayed(
+		base::call_delayed(
 			kSaveSettingsDelayedTimeout,
-			QApplication::instance(),
+			QCoreApplication::instance(),
 			[] { Local::writeSettings(); });
 	}
 }

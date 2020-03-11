@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/platform_specific.h"
 #include "data/data_document.h"
 #include "data/data_session.h"
+#include "data/data_peer.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/continuous_sliders.h"
 #include "ui/widgets/shadow.h"
@@ -22,11 +23,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/player/media_player_instance.h"
 #include "media/player/media_player_volume_controller.h"
 #include "styles/style_media_player.h"
-#include "styles/style_mediaview.h"
+#include "styles/style_media_view.h"
 #include "history/history_item.h"
 #include "storage/localstorage.h"
 #include "layout.h"
-#include "auth_session.h"
+#include "main/main_session.h"
+#include "facades.h"
 
 namespace Media {
 namespace Player {
@@ -515,7 +517,7 @@ void Widget::handleSongChange() {
 	TextWithEntities textWithEntities;
 	if (document->isVoiceMessage() || document->isVideoMessage()) {
 		if (const auto item = Auth().data().message(current.contextId())) {
-			const auto name = App::peerName(item->fromOriginal());
+			const auto name = item->fromOriginal()->name;
 			const auto date = [item] {
 				const auto parsed = ItemDateTime(item);
 				const auto date = parsed.date();

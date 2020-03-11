@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/image/image_source.h"
 #include "mainwidget.h"
 #include "core/application.h"
+#include "facades.h"
+#include "app.h"
 
 PhotoData::PhotoData(not_null<Data::Session*> owner, PhotoId id)
 : id(id)
@@ -23,7 +25,7 @@ Data::Session &PhotoData::owner() const {
 	return *_owner;
 }
 
-AuthSession &PhotoData::session() const {
+Main::Session &PhotoData::session() const {
 	return _owner->session();
 }
 

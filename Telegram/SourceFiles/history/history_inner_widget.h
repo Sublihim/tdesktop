@@ -25,6 +25,7 @@ struct StateRequest;
 enum class CursorState : char;
 enum class PointState : char;
 class EmptyPainter;
+class Element;
 } // namespace HistoryView
 
 namespace Window {
@@ -52,6 +53,8 @@ public:
 		Ui::ScrollArea *scroll,
 		not_null<History*> history);
 
+	Main::Session &session() const;
+
 	void messagesReceived(PeerData *peer, const QVector<MTPMessage> &messages);
 	void messagesReceivedDown(PeerData *peer, const QVector<MTPMessage> &messages);
 
@@ -59,6 +62,7 @@ public:
 
 	void touchScrollUpdated(const QPoint &screenPos);
 
+	void checkHistoryActivation();
 	void recountHistoryGeometry();
 	void updateSize();
 
@@ -77,6 +81,10 @@ public:
 		not_null<const Element*> view,
 		int from,
 		int till) const;
+	void elementStartStickerLoop(not_null<const Element*> view);
+	void elementShowPollResults(
+		not_null<PollData*> poll,
+		FullMsgId context);
 
 	void updateBotInfo(bool recount = true);
 
@@ -106,6 +114,7 @@ public:
 	// Ui::AbstractTooltipShower interface.
 	QString tooltipText() const override;
 	QPoint tooltipPos() const override;
+	bool tooltipWindowActive() const override;
 
 	// HistoryView::ElementDelegate interface.
 	static not_null<HistoryView::ElementDelegate*> ElementDelegate();
@@ -327,6 +336,8 @@ private:
 
 	style::cursor _cursor = style::cur_default;
 	SelectedItems _selected;
+
+	base::flat_set<not_null<const HistoryItem*>> _animatedStickersPlayed;
 
 	MouseAction _mouseAction = MouseAction::None;
 	TextSelectType _mouseSelectType = TextSelectType::Letters;

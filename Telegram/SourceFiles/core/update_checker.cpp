@@ -7,17 +7,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/update_checker.h"
 
-#include "platform/platform_info.h"
+#include "base/platform/base_platform_info.h"
 #include "base/timer.h"
 #include "base/bytes.h"
+#include "base/unixtime.h"
 #include "storage/localstorage.h"
 #include "core/application.h"
-#include "mainwindow.h"
 #include "core/click_handler_types.h"
+#include "mainwindow.h"
+#include "main/main_account.h"
 #include "info/info_memento.h"
 #include "info/settings/info_settings_widget.h"
 #include "window/window_session_controller.h"
 #include "settings/settings_intro.h"
+#include "ui/layers/box_content.h"
+#include "app.h"
+
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 
 extern "C" {
 #include <openssl/rsa.h>
@@ -215,7 +222,7 @@ QString FindUpdateFile() {
 			"^("
 			"tupdate|"
 			"tmacupd|"
-			"tmac32upd|"
+			"tosxupd|"
 			"tlinuxupd|"
 			"tlinux32upd"
 			")\\d+(_[a-z\\d]+)?$",
@@ -494,21 +501,7 @@ bool ParseCommonMap(
 		return false;
 	}
 	const auto platforms = document.object();
-	const auto platform = [&] {
-		if (Platform::IsWindows()) {
-			return "win";
-		} else if (Platform::IsMacOldBuild()) {
-			return "mac32";
-		} else if (Platform::IsMac()) {
-			return "mac";
-		} else if (Platform::IsLinux32Bit()) {
-			return "linux32";
-		} else if (Platform::IsLinux64Bit()) {
-			return "linux";
-		} else {
-			Unexpected("Platform in ParseCommonMap.");
-		}
-	}();
+	const auto platform = Platform::AutoUpdateKey();
 	const auto it = platforms.constFind(platform);
 	if (it == platforms.constEnd()) {
 		LOG(("Update Error: MTP platform '%1' not found in response."
@@ -616,7 +609,11 @@ HttpChecker::HttpChecker(bool testing) : Checker(testing) {
 }
 
 void HttpChecker::start() {
-	auto url = QUrl(Local::readAutoupdatePrefix() + qstr("/current"));
+	const auto updaterVersion = Platform::AutoUpdateVersion();
+	const auto path = Local::readAutoupdatePrefix()
+		+ qstr("/current")
+		+ (updaterVersion > 1 ? QString::number(updaterVersion) : QString());
+	auto url = QUrl(path);
 	DEBUG_LOG(("Update Info: requesting update state"));
 	const auto request = QNetworkRequest(url);
 	_manager = std::make_unique<QNetworkAccessManager>();
@@ -634,7 +631,7 @@ void HttpChecker::gotResponse() {
 		return;
 	}
 
-	cSetLastUpdateCheck(unixtime());
+	cSetLastUpdateCheck(base::unixtime::now());
 	const auto response = _reply->readAll();
 	clearSentRequest();
 
@@ -891,8 +888,10 @@ void MtpChecker::start() {
 		crl::on_main(this, [=] { fail(); });
 		return;
 	}
-	constexpr auto kFeed = "tdhbcfeed";
-	MTP::ResolveChannel(&_mtp, kFeed, [=](const MTPInputChannel &channel) {
+	const auto updaterVersion = Platform::AutoUpdateVersion();
+	const auto feed = "tdhbcfeed"
+		+ (updaterVersion > 1 ? QString::number(updaterVersion) : QString());
+	MTP::ResolveChannel(&_mtp, feed, [=](const MTPInputChannel &channel) {
 		_mtp.send(
 			MTPmessages_GetHistory(
 				MTP_inputPeerChannel(
@@ -1134,7 +1133,7 @@ void Updater::handleReady() {
 	stop();
 	_action = Action::Ready;
 	if (!App::quitting()) {
-		cSetLastUpdateCheck(unixtime());
+		cSetLastUpdateCheck(base::unixtime::now());
 		Local::writeSettings();
 	}
 }
@@ -1162,7 +1161,7 @@ void Updater::handleProgress() {
 void Updater::scheduleNext() {
 	stop();
 	if (!App::quitting()) {
-		cSetLastUpdateCheck(unixtime());
+		cSetLastUpdateCheck(base::unixtime::now());
 		Local::writeSettings();
 		start(true);
 	}
@@ -1208,7 +1207,7 @@ void Updater::start(bool forceWait) {
 	const auto updateInSecs = cLastUpdateCheck()
 		+ constDelay
 		+ int(rand() % randDelay)
-		- unixtime();
+		- base::unixtime::now();
 	auto sendRequest = (updateInSecs <= 0)
 		|| (updateInSecs > constDelay + randDelay);
 	if (!sendRequest && !forceWait) {
@@ -1389,7 +1388,7 @@ Updater::~Updater() {
 UpdateChecker::UpdateChecker()
 : _updater(GetUpdaterInstance()) {
 	if (IsAppLaunched()) {
-		if (const auto mtproto = Core::App().mtp()) {
+		if (const auto mtproto = Core::App().activeAccount().mtp()) {
 			_updater->setMtproto(mtproto);
 		}
 	}
@@ -1585,7 +1584,7 @@ void UpdateApplication() {
 					Window::SectionShow());
 			} else {
 				window->showSpecialLayer(
-					Box<Settings::LayerWidget>(),
+					Box<::Settings::LayerWidget>(),
 					anim::type::normal);
 			}
 			window->showFromTray();

@@ -30,6 +30,8 @@ extern "C" {
 #include <time.h>
 #endif
 
+#include <QtNetwork/QSslSocket>
+
 #ifdef small
 #undef small
 #endif // small
@@ -55,88 +57,6 @@ static_assert(sizeof(MTPint256) == 32, "Basic types size check failed");
 static_assert(sizeof(MTPdouble) == 8, "Basic types size check failed");
 
 static_assert(sizeof(int) >= 4, "Basic types size check failed");
-
-// Unixtime functions
-
-namespace {
-
-std::atomic<int> GlobalAtomicRequestId = 0;
-
-	QReadWriteLock unixtimeLock;
-	volatile int32 unixtimeDelta = 0;
-	volatile bool unixtimeWasSet = false;
-    volatile uint64 _msgIdStart, _msgIdLocal = 0, _msgIdMsStart;
-
-	void _initMsgIdConstants() {
-#ifdef Q_OS_WIN
-		LARGE_INTEGER li;
-		QueryPerformanceCounter(&li);
-		_msgIdMsStart = li.QuadPart;
-#elif defined Q_OS_MAC
-		_msgIdMsStart = mach_absolute_time();
-#else
-		timespec ts;
-		clock_gettime(CLOCK_REALTIME, &ts);
-		_msgIdMsStart = 1000000000 * uint64(ts.tv_sec) + uint64(ts.tv_nsec);
-#endif
-
-		uint32 msgIdRand;
-		memset_rand(&msgIdRand, sizeof(uint32));
-		_msgIdStart = (((uint64)((uint32)unixtime()) << 32) | (uint64)msgIdRand);
-	}
-}
-
-TimeId LocalUnixtime() {
-	return (TimeId)time(nullptr);
-}
-
-void unixtimeInit() {
-	{
-		QWriteLocker locker(&unixtimeLock);
-		unixtimeWasSet = false;
-		unixtimeDelta = 0;
-	}
-	_initMsgIdConstants();
-}
-
-void unixtimeSet(int32 serverTime, bool force) {
-	{
-		QWriteLocker locker(&unixtimeLock);
-		if (force) {
-			DEBUG_LOG(("MTP Info: forced setting client unixtime to %1").arg(serverTime));
-		} else {
-			if (unixtimeWasSet) return;
-			DEBUG_LOG(("MTP Info: setting client unixtime to %1").arg(serverTime));
-		}
-		unixtimeWasSet = true;
-		unixtimeDelta = serverTime + 1 - LocalUnixtime();
-		DEBUG_LOG(("MTP Info: now unixtimeDelta is %1").arg(unixtimeDelta));
-	}
-	_initMsgIdConstants();
-}
-
-TimeId unixtime() {
-	auto result = LocalUnixtime();
-
-	QReadLocker locker(&unixtimeLock);
-	return result + unixtimeDelta;
-}
-
-QDateTime ParseDateTime(TimeId serverTime) {
-	if (serverTime <= 0) {
-		return QDateTime();
-	}
-	QReadLocker locker(&unixtimeLock);
-	return QDateTime::fromTime_t(serverTime - unixtimeDelta);
-}
-
-TimeId ServerTimeFromParsed(const QDateTime &date) {
-	if (date.isNull()) {
-		return TimeId(0);
-	}
-	QReadLocker locker(&unixtimeLock);
-	return date.toTime_t() + unixtimeDelta;
-}
 
 // Precise timing functions / rand init
 
@@ -198,152 +118,6 @@ namespace {
 		}
 		return 0;
 	}
-
-	float64 _msgIdCoef;
-	class _MsStarter {
-	public:
-		_MsStarter() {
-#ifdef Q_OS_WIN
-			LARGE_INTEGER li;
-			QueryPerformanceFrequency(&li);
-
-			// 0xFFFF0000L istead of 0x100000000L to make msgId grow slightly slower, than unixtime and we had time to reconfigure
-			_msgIdCoef = float64(0xFFFF0000L) / float64(li.QuadPart);
-
-			QueryPerformanceCounter(&li);
-			const auto seed = li.QuadPart;
-#elif defined Q_OS_MAC
-            mach_timebase_info_data_t tb = { 0, 0 };
-            mach_timebase_info(&tb);
-            const auto freq = (float64(tb.numer) / tb.denom) / 1000000.;
-            _msgIdCoef = freq * (float64(0xFFFF0000L) / 1000.);
-
-            const auto seed = mach_absolute_time();
-#else
-			_msgIdCoef = float64(0xFFFF0000L) / 1000000000.;
-
-			timespec ts;
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			const auto seed = 1000LL * static_cast<crl::time>(ts.tv_sec) + (static_cast<crl::time>(ts.tv_nsec) / 1000000LL);
-#endif
-			srand((uint32)(seed & 0xFFFFFFFFL));
-		}
-	};
-	_MsStarter _msStarter;
-}
-
-bool ProxyData::valid() const {
-	if (type == Type::None || host.isEmpty() || !port) {
-		return false;
-	} else if (type == Type::Mtproto && !ValidMtprotoPassword(password)) {
-		return false;
-	}
-	return true;
-}
-
-int ProxyData::MaxMtprotoPasswordLength() {
-	return 34;
-}
-
-bool ProxyData::supportsCalls() const {
-	return (type == Type::Socks5);
-}
-
-bool ProxyData::tryCustomResolve() const {
-	return (type == Type::Socks5 || type == Type::Mtproto)
-		&& !qthelp::is_ipv6(host)
-		&& !QRegularExpression(
-			qsl("^\\d+\\.\\d+\\.\\d+\\.\\d+$")
-		).match(host).hasMatch();
-}
-
-bytes::vector ProxyData::secretFromMtprotoPassword() const {
-	Expects(type == Type::Mtproto);
-	Expects(password.size() % 2 == 0);
-
-	const auto length = password.size() / 2;
-	const auto fromHex = [](QChar ch) -> int {
-		const auto code = int(ch.unicode());
-		if (code >= '0' && code <= '9') {
-			return (code - '0');
-		} else if (code >= 'A' && code <= 'F') {
-			return 10 + (code - 'A');
-		} else if (ch >= 'a' && ch <= 'f') {
-			return 10 + (code - 'a');
-		}
-		return -1;
-	};
-	auto result = bytes::vector(length);
-	for (auto i = 0; i != length; ++i) {
-		const auto high = fromHex(password[2 * i]);
-		const auto low = fromHex(password[2 * i + 1]);
-		if (high < 0 || low < 0) {
-			return {};
-		}
-		result[i] = static_cast<gsl::byte>(high * 16 + low);
-	}
-	return result;
-}
-
-ProxyData::operator bool() const {
-	return valid();
-}
-
-bool ProxyData::operator==(const ProxyData &other) const {
-	if (!valid()) {
-		return !other.valid();
-	}
-	return (type == other.type)
-		&& (host == other.host)
-		&& (port == other.port)
-		&& (user == other.user)
-		&& (password == other.password);
-}
-
-bool ProxyData::operator!=(const ProxyData &other) const {
-	return !(*this == other);
-}
-
-bool ProxyData::ValidMtprotoPassword(const QString &secret) {
-	if (secret.size() == 32) {
-		static const auto check = QRegularExpression("^[a-fA-F0-9]{32}$");
-		return check.match(secret).hasMatch();
-	} else if (secret.size() == 34) {
-		static const auto check = QRegularExpression("^dd[a-fA-F0-9]{32}$");
-		return check.match(secret).hasMatch();
-	}
-	return false;
-}
-
-ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
-	if (!proxy.tryCustomResolve()
-		|| ipIndex < 0
-		|| ipIndex >= proxy.resolvedIPs.size()) {
-		return proxy;
-	}
-	return {
-		proxy.type,
-		proxy.resolvedIPs[ipIndex],
-		proxy.port,
-		proxy.user,
-		proxy.password
-	};
-}
-
-QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
-	if (proxy.type == ProxyData::Type::None) {
-		return QNetworkProxy::DefaultProxy;
-	} else if (proxy.type == ProxyData::Type::Mtproto) {
-		return QNetworkProxy::NoProxy;
-	}
-	return QNetworkProxy(
-		(proxy.type == ProxyData::Type::Socks5
-			? QNetworkProxy::Socks5Proxy
-			: QNetworkProxy::HttpProxy),
-		proxy.host,
-		proxy.port,
-		proxy.user,
-		proxy.password);
 }
 
 namespace ThirdParty {
@@ -391,7 +165,6 @@ namespace ThirdParty {
 			} else {
 				LOG(("MTP Error: Could not init OpenSSL threads, CRYPTO_num_locks() returned zero!"));
 			}
-			CRYPTO_THREADID_set_callback(_sslThreadId);
 		}
 		if (!CRYPTO_get_dynlock_create_callback()) {
 			CRYPTO_set_dynlock_create_callback(_sslCreateFunction);
@@ -418,87 +191,13 @@ namespace ThirdParty {
 #endif
 		ENGINE_cleanup();
 		CONF_modules_unload(1);
-		ERR_remove_state(0);
 		ERR_free_strings();
-		ERR_remove_thread_state(nullptr);
 		EVP_cleanup();
 
 		delete[] base::take(_sslLocks);
 
 		Platform::ThirdParty::finish();
 	}
-}
-
-uint64 msgid() {
-#ifdef Q_OS_WIN
-    LARGE_INTEGER li;
-    QueryPerformanceCounter(&li);
-    uint64 result = _msgIdStart + (uint64)floor((li.QuadPart - _msgIdMsStart) * _msgIdCoef);
-#elif defined Q_OS_MAC
-    uint64 msCount = mach_absolute_time();
-    uint64 result = _msgIdStart + (uint64)floor((msCount - _msgIdMsStart) * _msgIdCoef);
-#else
-    timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64 msCount = 1000000000 * uint64(ts.tv_sec) + uint64(ts.tv_nsec);
-    uint64 result = _msgIdStart + (uint64)floor((msCount - _msgIdMsStart) * _msgIdCoef);
-#endif
-
-	result &= ~0x03L;
-
-	return result + (_msgIdLocal += 4);
-}
-
-int GetNextRequestId() {
-	const auto result = ++GlobalAtomicRequestId;
-	if (result == std::numeric_limits<int>::max() / 2) {
-		GlobalAtomicRequestId = 0;
-	}
-	return result;
-}
-
-// crc32 hash, taken somewhere from the internet
-
-namespace {
-	uint32 _crc32Table[256];
-	class _Crc32Initializer {
-	public:
-		_Crc32Initializer() {
-			uint32 poly = 0x04c11db7;
-			for (uint32 i = 0; i < 256; ++i) {
-				_crc32Table[i] = reflect(i, 8) << 24;
-				for (uint32 j = 0; j < 8; ++j) {
-					_crc32Table[i] = (_crc32Table[i] << 1) ^ (_crc32Table[i] & (1 << 31) ? poly : 0);
-				}
-				_crc32Table[i] = reflect(_crc32Table[i], 32);
-			}
-		}
-
-	private:
-		uint32 reflect(uint32 val, char ch) {
-			uint32 result = 0;
-			for (int i = 1; i < (ch + 1); ++i) {
-				if (val & 1) {
-					result |= 1 << (ch - i);
-				}
-				val >>= 1;
-			}
-			return result;
-		}
-	};
-}
-
-int32 hashCrc32(const void *data, uint32 len) {
-	static _Crc32Initializer _crc32Initializer;
-
-	const uchar *buf = (const uchar *)data;
-
-	uint32 crc(0xffffffff);
-    for (uint32 i = 0; i < len; ++i) {
-		crc = (crc >> 8) ^ _crc32Table[(crc & 0xFF) ^ buf[i]];
-	}
-
-    return crc ^ 0xffffffff;
 }
 
 int32 *hashSha1(const void *data, uint32 len, void *dest) {
@@ -1005,6 +704,10 @@ QString rusKeyboardLayoutSwitch(const QString &from) {
 		fastRusKeyboardSwitch.insert(QString::fromUtf8("ь").at(0), 'm');
 		fastRusKeyboardSwitch.insert(QString::fromUtf8("б").at(0), ',');
 		fastRusKeyboardSwitch.insert(QString::fromUtf8("ю").at(0), '.');
+		fastRusKeyboardSwitch.insert(QString::fromUtf8("І").at(0), 'S');
+		fastRusKeyboardSwitch.insert(QString::fromUtf8("і").at(0), 's');
+		fastRusKeyboardSwitch.insert(QString::fromUtf8("Ї").at(0), ']');
+		fastRusKeyboardSwitch.insert(QString::fromUtf8("ї").at(0), ']');
 	}
 
 	QString result;

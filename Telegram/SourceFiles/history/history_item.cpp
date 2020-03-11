@@ -13,24 +13,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_service_message.h"
 #include "history/history_item_components.h"
-#include "history/media/history_media_grouped.h"
+#include "history/view/media/history_view_media_grouped.h"
 #include "history/history_service.h"
 #include "history/history_message.h"
 #include "history/history.h"
 #include "media/clip/media_clip_reader.h"
 #include "ui/effects/ripple_animation.h"
+#include "ui/text/text_isolated_emoji.h"
 #include "ui/text_options.h"
 #include "storage/file_upload.h"
 #include "storage/storage_facade.h"
 #include "storage/storage_shared_media.h"
 //#include "storage/storage_feed_messages.h" // #feed
-#include "auth_session.h"
+#include "main/main_session.h"
 #include "apiwrap.h"
 #include "media/audio/media_audio.h"
 #include "core/application.h"
 #include "mainwindow.h"
 #include "window/window_session_controller.h"
 #include "core/crash_reports.h"
+#include "base/unixtime.h"
+#include "data/data_scheduled_messages.h" // kScheduledUntilOnlineTimestamp
 #include "data/data_session.h"
 #include "data/data_messages.h"
 #include "data/data_media_types.h"
@@ -38,6 +41,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
+#include "observer_peer.h"
+#include "facades.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_history.h"
 
@@ -56,6 +61,7 @@ not_null<HistoryItem*> CreateUnsupportedMessage(
 		not_null<History*> history,
 		MsgId msgId,
 		MTPDmessage::Flags flags,
+		MTPDmessage_ClientFlags clientFlags,
 		MsgId replyTo,
 		UserId viaBotId,
 		TimeId date,
@@ -69,10 +75,10 @@ not_null<HistoryItem*> CreateUnsupportedMessage(
 		EntityInText(EntityType::Italic, 0, text.text.size()));
 	flags &= ~MTPDmessage::Flag::f_post_author;
 	flags |= MTPDmessage::Flag::f_legacy;
-	return history->owner().makeMessage(
-		history,
+	return history->makeMessage(
 		msgId,
 		flags,
+		clientFlags,
 		replyTo,
 		viaBotId,
 		date,
@@ -164,17 +170,27 @@ HistoryItem::HistoryItem(
 	not_null<History*> history,
 	MsgId id,
 	MTPDmessage::Flags flags,
+	MTPDmessage_ClientFlags clientFlags,
 	TimeId date,
 	UserId from)
 : id(id)
 , _history(history)
 , _from(from ? history->owner().user(from) : history->peer)
 , _flags(flags)
+, _clientFlags(clientFlags)
 , _date(date) {
+	if (isHistoryEntry() && IsClientMsgId(id)) {
+		_history->registerLocalMessage(this);
+	}
 }
 
 TimeId HistoryItem::date() const {
 	return _date;
+}
+
+TimeId HistoryItem::NewMessageDate(TimeId scheduled) {
+	const auto now = base::unixtime::now();
+	return scheduled ? std::max(scheduled, now + 60) : now;
 }
 
 void HistoryItem::finishEdition(int oldKeyboardTop) {
@@ -271,7 +287,7 @@ void HistoryItem::finishEditionToEmpty() {
 
 bool HistoryItem::hasUnreadMediaFlag() const {
 	if (_history->peer->isChannel()) {
-		const auto passed = unixtime() - date();
+		const auto passed = base::unixtime::now() - date();
 		if (passed >= Global::ChannelsReadMediaPeriod()) {
 			return false;
 		}
@@ -342,13 +358,19 @@ void HistoryItem::addLogEntryOriginal(
 		WebPageId localId,
 		const QString &label,
 		const TextWithEntities &content) {
-	Expects(isLogEntry());
+	Expects(isAdminLogEntry());
 
 	AddComponents(HistoryMessageLogEntryOriginal::Bit());
 	Get<HistoryMessageLogEntryOriginal>()->page = _history->owner().webpage(
 		localId,
 		label,
 		content);
+}
+
+PeerData *HistoryItem::specialNotificationPeer() const {
+	return (mentionsMe() && !_history->peer->isUser())
+		? from().get()
+		: nullptr;
 }
 
 UserData *HistoryItem::viaBot() const {
@@ -366,11 +388,31 @@ UserData *HistoryItem::getMessageBot() const {
 	if (!bot) {
 		bot = history()->peer->asUser();
 	}
-	return (bot && bot->botInfo) ? bot : nullptr;
-};
+	return (bot && bot->isBot()) ? bot : nullptr;
+}
+
+bool HistoryItem::isHistoryEntry() const {
+	return IsServerMsgId(id)
+		|| (_clientFlags & MTPDmessage_ClientFlag::f_local_history_entry);
+}
+
+bool HistoryItem::isAdminLogEntry() const {
+	return (_clientFlags & MTPDmessage_ClientFlag::f_admin_log_entry);
+}
+
+bool HistoryItem::isFromScheduled() const {
+	return isHistoryEntry()
+		&& (_flags & MTPDmessage::Flag::f_from_scheduled);
+}
+
+bool HistoryItem::isScheduled() const {
+	return !isHistoryEntry()
+		&& !isAdminLogEntry()
+		&& (_flags & MTPDmessage::Flag::f_from_scheduled);
+}
 
 void HistoryItem::destroy() {
-	_history->owner().destroyMessage(this);
+	_history->destroyMessage(this);
 }
 
 void HistoryItem::refreshMainView() {
@@ -431,9 +473,14 @@ void HistoryItem::indexAsNewItem() {
 }
 
 void HistoryItem::setRealId(MsgId newId) {
-	Expects(!IsServerMsgId(id));
+	Expects(_clientFlags & MTPDmessage_ClientFlag::f_sending);
+	Expects(IsClientMsgId(id));
 
 	const auto oldId = std::exchange(id, newId);
+	_clientFlags &= ~MTPDmessage_ClientFlag::f_sending;
+	if (IsServerMsgId(id)) {
+		_history->unregisterLocalMessage(this);
+	}
 	_history->owner().notifyItemIdChange({ this, oldId });
 
 	// We don't call Notify::replyMarkupUpdated(this) and update keyboard
@@ -457,6 +504,10 @@ bool HistoryItem::canPin() const {
 		return false;
 	}
 	return _history->peer->canPinMessages();
+}
+
+bool HistoryItem::allowsSendNow() const {
+	return false;
 }
 
 bool HistoryItem::allowsForward() const {
@@ -490,7 +541,9 @@ bool HistoryItem::canStopPoll() const {
 }
 
 bool HistoryItem::canDelete() const {
-	if (isLogEntry() || (!IsServerMsgId(id) && serviceMsg())) {
+	if (!IsServerMsgId(id) && serviceMsg()) {
+		return false;
+	} else if (!isHistoryEntry() && !isScheduled()) {
 		return false;
 	}
 	auto channel = _history->peer->asChannel();
@@ -561,7 +614,7 @@ bool HistoryItem::suggestReport() const {
 	} else if (const auto channel = history()->peer->asChannel()) {
 		return true;
 	} else if (const auto user = history()->peer->asUser()) {
-		return user->botInfo != nullptr;
+		return user->isBot();
 	}
 	return false;
 }
@@ -655,13 +708,26 @@ MsgId HistoryItem::idOriginal() const {
 	return id;
 }
 
+void HistoryItem::sendFailed() {
+	Expects(_clientFlags & MTPDmessage_ClientFlag::f_sending);
+	Expects(!(_clientFlags & MTPDmessage_ClientFlag::f_failed));
+
+	_clientFlags = (_clientFlags | MTPDmessage_ClientFlag::f_failed)
+		& ~MTPDmessage_ClientFlag::f_sending;
+	if (history()->peer->isChannel()) {
+		Notify::peerUpdatedDelayed(
+			history()->peer,
+			Notify::PeerUpdate::Flag::ChannelLocalMessages);
+	}
+}
+
 bool HistoryItem::needCheck() const {
 	return out() || (id < 0 && history()->peer->isSelf());
 }
 
 bool HistoryItem::unread() const {
-	// Messages from myself are always read.
-	if (history()->peer->isSelf()) {
+	// Messages from myself are always read, unless scheduled.
+	if (history()->peer->isSelf() && !isFromScheduled()) {
 		return false;
 	}
 
@@ -676,7 +742,7 @@ bool HistoryItem::unread() const {
 				return false;
 			}
 			if (const auto user = history()->peer->asUser()) {
-				if (user->botInfo) {
+				if (user->isBot()) {
 					return false;
 				}
 			} else if (const auto channel = history()->peer->asChannel()) {
@@ -694,11 +760,19 @@ bool HistoryItem::unread() const {
 		}
 		return true;
 	}
-	return (_flags & MTPDmessage_ClientFlag::f_clientside_unread);
+	return (_clientFlags & MTPDmessage_ClientFlag::f_clientside_unread);
+}
+
+bool HistoryItem::showNotification() const {
+	const auto channel = _history->peer->asChannel();
+	if (channel && !channel->amIn()) {
+		return false;
+	}
+	return (out() || _history->peer->isSelf()) ? isFromScheduled() : unread();
 }
 
 void HistoryItem::markClientSideAsRead() {
-	_flags &= ~MTPDmessage_ClientFlag::f_clientside_unread;
+	_clientFlags &= ~MTPDmessage_ClientFlag::f_clientside_unread;
 }
 
 MessageGroupId HistoryItem::groupId() const {
@@ -756,6 +830,10 @@ QString HistoryItem::inDialogsText(DrawInDialog way) const {
 	return plainText;
 }
 
+Ui::Text::IsolatedEmoji HistoryItem::isolatedEmoji() const {
+	return Ui::Text::IsolatedEmoji();
+}
+
 void HistoryItem::drawInDialog(
 		Painter &p,
 		const QRect &r,
@@ -781,7 +859,22 @@ void HistoryItem::drawInDialog(
 HistoryItem::~HistoryItem() = default;
 
 QDateTime ItemDateTime(not_null<const HistoryItem*> item) {
-	return ParseDateTime(item->date());
+	return base::unixtime::parse(item->date());
+}
+
+QString ItemDateText(not_null<const HistoryItem*> item, bool isUntilOnline) {
+	const auto dateText = langDayOfMonthFull(ItemDateTime(item).date());
+	return !item->isScheduled()
+		? dateText
+		: isUntilOnline
+			? tr::lng_scheduled_date_until_online(tr::now)
+			: tr::lng_scheduled_date(tr::now, lt_date, dateText);
+}
+
+bool IsItemScheduledUntilOnline(not_null<const HistoryItem*> item) {
+	return item->isScheduled()
+		&& (item->date() ==
+			Data::ScheduledMessages::kScheduledUntilOnlineTimestamp);
 }
 
 ClickHandlerPtr goToMessageClickHandler(
@@ -814,7 +907,8 @@ ClickHandlerPtr goToMessageClickHandler(
 
 not_null<HistoryItem*> HistoryItem::Create(
 		not_null<History*> history,
-		const MTPMessage &message) {
+		const MTPMessage &message,
+		MTPDmessage_ClientFlags clientFlags) {
 	return message.match([&](const MTPDmessage &data) -> HistoryItem* {
 		const auto media = data.vmedia();
 		const auto checked = media
@@ -825,6 +919,7 @@ not_null<HistoryItem*> HistoryItem::Create(
 				history,
 				data.vid().v,
 				data.vflags().v,
+				clientFlags,
 				data.vreply_to_msg_id().value_or_empty(),
 				data.vvia_bot_id().value_or_empty(),
 				data.vdate().v,
@@ -833,26 +928,30 @@ not_null<HistoryItem*> HistoryItem::Create(
 			const auto text = HistoryService::PreparedText {
 				tr::lng_message_empty(tr::now)
 			};
-			return history->owner().makeServiceMessage(
-				history,
+			return history->makeServiceMessage(
 				data.vid().v,
+				clientFlags,
 				data.vdate().v,
 				text,
 				data.vflags().v,
 				data.vfrom_id().value_or_empty());
 		} else if (checked == MediaCheckResult::HasTimeToLive) {
-			return history->owner().makeServiceMessage(history, data);
+			return history->makeServiceMessage(data, clientFlags);
 		}
-		return history->owner().makeMessage(history, data);
+		return history->makeMessage(data, clientFlags);
 	}, [&](const MTPDmessageService &data) -> HistoryItem* {
 		if (data.vaction().type() == mtpc_messageActionPhoneCall) {
-			return history->owner().makeMessage(history, data);
+			return history->makeMessage(data, clientFlags);
 		}
-		return history->owner().makeServiceMessage(history, data);
+		return history->makeServiceMessage(data, clientFlags);
 	}, [&](const MTPDmessageEmpty &data) -> HistoryItem* {
 		const auto text = HistoryService::PreparedText{
 			tr::lng_message_empty(tr::now)
 		};
-		return history->owner().makeServiceMessage(history, data.vid().v, TimeId(0), text);
+		return history->makeServiceMessage(
+			data.vid().v,
+			clientFlags,
+			TimeId(0),
+			text);
 	});
 }

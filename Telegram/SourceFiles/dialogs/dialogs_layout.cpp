@@ -22,10 +22,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item_components.h"
 #include "history/history_item.h"
 #include "history/history.h"
+#include "base/unixtime.h"
 #include "data/data_channel.h"
 #include "data/data_user.h"
 #include "data/data_folder.h"
 #include "data/data_peer_values.h"
+#include "app.h"
 
 namespace Dialogs {
 namespace Layout {
@@ -639,11 +641,13 @@ void RowPainter::paint(
 			if (cloudDraft) {
 				return (item->date() > cloudDraft->date)
 					? ItemDateTime(item)
-					: ParseDateTime(cloudDraft->date);
+					: base::unixtime::parse(cloudDraft->date);
 			}
 			return ItemDateTime(item);
 		}
-		return cloudDraft ? ParseDateTime(cloudDraft->date) : QDateTime();
+		return cloudDraft
+			? base::unixtime::parse(cloudDraft->date)
+			: QDateTime();
 	}();
 	const auto displayMentionBadge = history
 		? history->hasUnreadMentions()

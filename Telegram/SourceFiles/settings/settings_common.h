@@ -8,23 +8,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/rp_widget.h"
+#include "base/object_ptr.h"
+
+namespace Main {
+class Session;
+} // namespace Main
 
 namespace Ui {
 class VerticalLayout;
+class FlatLabel;
+class SettingsButton;
 } // namespace Ui
 
 namespace Window {
 class SessionController;
 } // namespace Window
 
-namespace Info {
-namespace Profile {
-class Button;
-} // namespace Profile
-} // namespace Info
-
 namespace style {
-struct InfoProfileButton;
+struct SettingsButton;
 } // namespace style
 
 namespace Settings {
@@ -39,7 +40,7 @@ enum class Type {
 	Calls,
 };
 
-using Button = Info::Profile::Button;
+using Button = Ui::SettingsButton;
 
 class Section : public Ui::RpWidget {
 public:
@@ -60,8 +61,7 @@ public:
 object_ptr<Section> CreateSection(
 	Type type,
 	not_null<QWidget*> parent,
-	Window::SessionController *controller = nullptr,
-	UserData *self = nullptr);
+	not_null<Window::SessionController*> controller);
 
 void AddSkip(not_null<Ui::VerticalLayout*> container);
 void AddSkip(not_null<Ui::VerticalLayout*> container, int skip);
@@ -72,22 +72,22 @@ void AddDividerText(
 not_null<Button*> AddButton(
 	not_null<Ui::VerticalLayout*> container,
 	rpl::producer<QString> text,
-	const style::InfoProfileButton &st,
+	const style::SettingsButton &st,
 	const style::icon *leftIcon = nullptr,
 	int iconLeft = 0);
 not_null<Button*> AddButtonWithLabel(
 	not_null<Ui::VerticalLayout*> container,
 	rpl::producer<QString> text,
 	rpl::producer<QString> label,
-	const style::InfoProfileButton &st,
+	const style::SettingsButton &st,
 	const style::icon *leftIcon = nullptr,
 	int iconLeft = 0);
 void CreateRightLabel(
 	not_null<Button*> button,
 	rpl::producer<QString> label,
-	const style::InfoProfileButton &st,
+	const style::SettingsButton &st,
 	rpl::producer<QString> buttonText);
-void AddSubsectionTitle(
+not_null<Ui::FlatLabel*> AddSubsectionTitle(
 	not_null<Ui::VerticalLayout*> container,
 	rpl::producer<QString> text);
 
@@ -96,6 +96,8 @@ using MenuCallback = Fn<QAction*(
 	Fn<void()> handler)>;
 
 void FillMenu(
+	not_null<Window::SessionController*> controller,
+	Type type,
 	Fn<void(Type)> showOther,
 	MenuCallback addAction);
 

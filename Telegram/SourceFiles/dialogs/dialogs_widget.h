@@ -7,13 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "dialogs/dialogs_key.h"
 #include "window/section_widget.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/scroll_area.h"
-#include "dialogs/dialogs_key.h"
 #include "ui/special_buttons.h"
+#include "api/api_single_message_search.h"
+#include "mtproto/mtproto_rpc_sender.h"
 
-class AuthSession;
+namespace Main {
+class Session;
+} // namespace Main
 
 namespace HistoryView {
 class TopBarWidget;
@@ -37,6 +41,7 @@ class ConnectionState;
 
 namespace Dialogs {
 
+enum class Mode;
 struct RowDescriptor;
 class Row;
 class FakeRow;
@@ -131,6 +136,7 @@ private:
 		const MTPcontacts_Found &result,
 		mtpRequestId requestId);
 	void escape();
+	void cancelSearchRequest();
 
 	void setupSupportMode();
 	void setupConnectingWidget();
@@ -214,19 +220,14 @@ private:
 	int32 _searchNextRate = 0;
 	bool _searchFull = false;
 	bool _searchFullMigrated = false;
+	int _searchInHistoryRequest = 0; // Not real mtpRequestId.
 	mtpRequestId _searchRequest = 0;
 
-	using SearchCache = QMap<QString, MTPmessages_Messages>;
-	SearchCache _searchCache;
-
-	using SearchQueries = QMap<mtpRequestId, QString>;
-	SearchQueries _searchQueries;
-
-	using PeerSearchCache = QMap<QString, MTPcontacts_Found>;
-	PeerSearchCache _peerSearchCache;
-
-	using PeerSearchQueries = QMap<mtpRequestId, QString>;
-	PeerSearchQueries _peerSearchQueries;
+	QMap<QString, MTPmessages_Messages> _searchCache;
+	Api::SingleMessageSearch _singleMessageSearch;
+	QMap<mtpRequestId, QString> _searchQueries;
+	QMap<QString, MTPcontacts_Found> _peerSearchCache;
+	QMap<mtpRequestId, QString> _peerSearchQueries;
 
 	QPixmap _widthAnimationCache;
 

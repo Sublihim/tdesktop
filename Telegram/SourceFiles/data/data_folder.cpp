@@ -9,17 +9,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_session.h"
 #include "data/data_channel.h"
+#include "data/data_histories.h"
 #include "dialogs/dialogs_key.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "lang/lang_keys.h"
 #include "storage/storage_facade.h"
 #include "core/application.h"
+#include "main/main_account.h"
 //#include "storage/storage_feed_messages.h" // #feed
-#include "auth_session.h"
+#include "main/main_session.h"
 #include "observer_peer.h"
 #include "apiwrap.h"
 #include "mainwidget.h"
+#include "facades.h"
 #include "styles/style_dialogs.h"
 
 namespace Data {
@@ -28,11 +31,12 @@ namespace {
 constexpr auto kLoadedChatsMinCount = 20;
 constexpr auto kShowChatNamesCount = 8;
 
-rpl::producer<int> PinnedDialogsInFolderMaxValue() {
+rpl::producer<int> PinnedDialogsInFolderMaxValue(
+		not_null<Main::Session*> session) {
 	return rpl::single(
 		rpl::empty_value()
 	) | rpl::then(
-		Core::App().configUpdates()
+		session->account().configUpdates()
 	) | rpl::map([=] {
 		return Global::PinnedDialogsInFolderMax();
 	});
@@ -53,7 +57,7 @@ rpl::producer<int> PinnedDialogsInFolderMaxValue() {
 Folder::Folder(not_null<Data::Session*> owner, FolderId id)
 : Entry(owner, this)
 , _id(id)
-, _chatsList(PinnedDialogsInFolderMaxValue())
+, _chatsList(PinnedDialogsInFolderMaxValue(&owner->session()))
 , _name(tr::lng_archived_name(tr::now)) {
 	indexNameParts();
 
@@ -105,7 +109,7 @@ void Folder::registerOne(not_null<History*> history) {
 	if (_chatsList.indexed()->size() == 1) {
 		updateChatListSortPosition();
 		if (!_cloudUnread.known) {
-			session().api().requestDialogEntry(this);
+			owner().histories().requestDialogEntry(this);
 		}
 	} else {
 		updateChatListEntry();
@@ -320,7 +324,7 @@ uint32 Folder::chatListViewVersion() const {
 
 void Folder::requestChatListMessage() {
 	if (!chatListMessageKnown()) {
-		session().api().requestDialogEntry(this);
+		owner().histories().requestDialogEntry(this);
 	}
 }
 

@@ -7,11 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/peer_list_box.h"
 
-#include <rpl/range.h>
-#include "styles/style_boxes.h"
-#include "styles/style_dialogs.h"
-#include "styles/style_widgets.h"
-#include "auth_session.h"
+#include "main/main_session.h"
 #include "mainwidget.h"
 #include "ui/widgets/multi_select.h"
 #include "ui/widgets/labels.h"
@@ -28,7 +24,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_values.h"
 #include "data/data_chat.h"
 #include "data/data_session.h"
+#include "base/unixtime.h"
 #include "window/themes/window_theme.h"
+#include "styles/style_layers.h"
+#include "styles/style_boxes.h"
+#include "styles/style_dialogs.h"
+#include "styles/style_widgets.h"
+
+#include <rpl/range.h>
 
 auto PaintUserpicCallback(
 	not_null<PeerData*> peer,
@@ -57,7 +60,7 @@ void PeerListBox::createMultiSelect() {
 	Expects(_select == nullptr);
 
 	auto entity = object_ptr<Ui::MultiSelect>(
-		this, 
+		this,
 		st::contactsMultiSelect,
 		tr::lng_participant_filter());
 	_select.create(this, std::move(entity));
@@ -65,11 +68,15 @@ void PeerListBox::createMultiSelect() {
 	) | rpl::start_with_next(
 		[this] { updateScrollSkips(); },
 		lifetime());
-	_select->entity()->setSubmittedCallback([this](Qt::KeyboardModifiers) { content()->submitted(); });
-	_select->entity()->setQueryChangedCallback([this](const QString &query) { searchQueryChanged(query); });
-	_select->entity()->setItemRemovedCallback([this](uint64 itemId) {
-		if (auto peer = Auth().data().peerLoaded(itemId)) {
-			if (auto row = peerListFindRow(peer->id)) {
+	_select->entity()->setSubmittedCallback([=](Qt::KeyboardModifiers) {
+		content()->submitted();
+	});
+	_select->entity()->setQueryChangedCallback([=](const QString &query) {
+		searchQueryChanged(query);
+	});
+	_select->entity()->setItemRemovedCallback([=](uint64 itemId) {
+		if (const auto peer = _controller->session().data().peerLoaded(itemId)) {
+			if (const auto row = peerListFindRow(peer->id)) {
 				content()->changeCheckState(row, false, PeerListRow::SetStyle::Animated);
 				update();
 			}
@@ -103,7 +110,7 @@ void PeerListBox::prepare() {
 			this,
 			_controller.get(),
 			st::peerListBox),
-		st::boxLayerScroll));
+		st::boxScroll));
 	content()->resizeToWidth(_controller->contentWidth());
 
 	_controller->setDelegate(this);
@@ -335,7 +342,7 @@ auto PeerListBox::peerListCollectSelectedRows()
 	if (!items.empty()) {
 		result.reserve(items.size());
 		for (const auto itemId : items) {
-			result.push_back(Auth().data().peer(itemId));
+			result.push_back(_controller->session().data().peer(itemId));
 		}
 	}
 	return result;
@@ -377,7 +384,7 @@ void PeerListRow::refreshStatus() {
 		if (_isSavedMessagesChat) {
 			setStatusText(tr::lng_saved_forward_here(tr::now));
 		} else {
-			auto time = unixtime();
+			auto time = base::unixtime::now();
 			setStatusText(Data::OnlineText(user, time));
 			if (Data::OnlineTextActive(user, time)) {
 				_statusType = StatusType::Online;
@@ -502,14 +509,14 @@ void PeerListRow::paintDisabledCheckUserpic(
 	auto userpicDiameter = st::contactsPhotoCheckbox.imageRadius * 2;
 	auto userpicLeft = x + userpicShift;
 	auto userpicTop = y + userpicShift;
-	auto userpicEllipse = rtlrect(x, y, userpicDiameter, userpicDiameter, outerWidth);
+	auto userpicEllipse = style::rtlrect(x, y, userpicDiameter, userpicDiameter, outerWidth);
 	auto userpicBorderPen = st::contactsPhotoDisabledCheckFg->p;
 	userpicBorderPen.setWidth(st::contactsPhotoCheckbox.selectWidth);
 
 	auto iconDiameter = st::contactsPhotoCheckbox.check.size;
 	auto iconLeft = x + userpicDiameter + st::contactsPhotoCheckbox.selectWidth - iconDiameter;
 	auto iconTop = y + userpicDiameter + st::contactsPhotoCheckbox.selectWidth - iconDiameter;
-	auto iconEllipse = rtlrect(iconLeft, iconTop, iconDiameter, iconDiameter, outerWidth);
+	auto iconEllipse = style::rtlrect(iconLeft, iconTop, iconDiameter, iconDiameter, outerWidth);
 	auto iconBorderPen = st::contactsPhotoCheckbox.check.border->p;
 	iconBorderPen.setWidth(st::contactsPhotoCheckbox.selectWidth);
 
@@ -573,7 +580,9 @@ PeerListContent::PeerListContent(
 , _st(st)
 , _controller(controller)
 , _rowHeight(_st.item.height) {
-	subscribe(Auth().downloaderTaskFinished(), [this] { update(); });
+	subscribe(_controller->session().downloaderTaskFinished(), [=] {
+		update();
+	});
 
 	using UpdateFlag = Notify::PeerUpdate::Flag;
 	auto changes = UpdateFlag::NameChanged | UpdateFlag::PhotoChanged;
@@ -1278,7 +1287,6 @@ void PeerListContent::loadProfilePhotos() {
 
 	auto yFrom = _visibleTop;
 	auto yTo = _visibleBottom + (_visibleBottom - _visibleTop) * PreloadHeightsCount;
-	Auth().downloader().clearPriorities();
 
 	if (yTo < 0) return;
 	if (yFrom < 0) yFrom = 0;

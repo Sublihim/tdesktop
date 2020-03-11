@@ -11,7 +11,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "logs.h"
 
 #include <QImage>
+
+#ifdef LIB_FFMPEG_USE_QT_PRIVATE_API
 #include <private/qdrawhelper_p.h>
+#endif // LIB_FFMPEG_USE_QT_PRIVATE_API
 
 extern "C" {
 #include <libavutil/opt.h>
@@ -20,7 +23,8 @@ extern "C" {
 namespace FFmpeg {
 namespace {
 
-constexpr auto kAlignImageBy = 16;
+// See https://github.com/telegramdesktop/tdesktop/issues/7225
+constexpr auto kAlignImageBy = 64;
 constexpr auto kImageFormat = QImage::Format_ARGB32_Premultiplied;
 constexpr auto kMaxScaleByAspectRatio = 16;
 constexpr auto kAvioBlockSize = 4096;
@@ -42,6 +46,40 @@ void AlignedImageBufferCleanupHandler(void* data) {
 [[nodiscard]] bool IsAlignedImage(const QImage &image) {
 	return !(reinterpret_cast<uintptr_t>(image.bits()) % kAlignImageBy)
 		&& !(image.bytesPerLine() % kAlignImageBy);
+}
+
+void UnPremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
+	[[maybe_unused]] const auto udst = reinterpret_cast<uint*>(dst);
+	const auto usrc = reinterpret_cast<const uint*>(src);
+
+#ifndef LIB_FFMPEG_USE_QT_PRIVATE_API
+	for (auto i = 0; i != intsCount; ++i) {
+		udst[i] = qUnpremultiply(usrc[i]);
+	}
+#elif QT_VERSION < QT_VERSION_CHECK(5, 12, 0)
+	static const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
+	layout->convertFromARGB32PM(udst, usrc, intsCount, layout, nullptr);
+#else // Qt >= 5.12
+	static const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
+	layout->storeFromARGB32PM(dst, usrc, 0, intsCount, nullptr, nullptr);
+#endif // Qt >= 5.12
+}
+
+void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
+	const auto udst = reinterpret_cast<uint*>(dst);
+	[[maybe_unused]] const auto usrc = reinterpret_cast<const uint*>(src);
+
+#ifndef LIB_FFMPEG_USE_QT_PRIVATE_API
+	for (auto i = 0; i != intsCount; ++i) {
+		udst[i] = qPremultiply(usrc[i]);
+	}
+#elif QT_VERSION < QT_VERSION_CHECK(5, 12, 0)
+	static const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
+	layout->convertToARGB32PM(udst, usrc, intsCount, layout, nullptr);
+#else // Qt >= 5.12
+	static const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
+	layout->fetchToARGB32PM(udst, src, 0, intsCount, nullptr, nullptr);
+#endif // Qt >= 5.12
 }
 
 } // namespace
@@ -360,58 +398,35 @@ void UnPremultiply(QImage &to, const QImage &from) {
 	if (!GoodStorageForFrame(to, from.size())) {
 		to = CreateFrameStorage(from.size());
 	}
-
-	const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
-	const auto convert = layout->convertFromARGB32PM;
 	const auto fromPerLine = from.bytesPerLine();
 	const auto toPerLine = to.bytesPerLine();
 	const auto width = from.width();
+	const auto height = from.height();
+	auto fromBytes = from.bits();
+	auto toBytes = to.bits();
 	if (fromPerLine != width * 4 || toPerLine != width * 4) {
-		auto fromBytes = from.bits();
-		auto toBytes = to.bits();
-		for (auto i = 0; i != to.height(); ++i) {
-			convert(
-				reinterpret_cast<uint*>(toBytes),
-				reinterpret_cast<const uint*>(fromBytes),
-				width,
-				layout,
-				nullptr);
+		for (auto i = 0; i != height; ++i) {
+			UnPremultiplyLine(toBytes, fromBytes, width);
 			fromBytes += fromPerLine;
 			toBytes += toPerLine;
 		}
 	} else {
-		convert(
-			reinterpret_cast<uint*>(to.bits()),
-			reinterpret_cast<const uint*>(from.bits()),
-			from.width() * from.height(),
-			layout,
-			nullptr);
+		UnPremultiplyLine(toBytes, fromBytes, width * height);
 	}
 }
 
 void PremultiplyInplace(QImage &image) {
-	const auto layout = &qPixelLayouts[QImage::Format_ARGB32];
-	const auto convert = layout->convertToARGB32PM;
 	const auto perLine = image.bytesPerLine();
 	const auto width = image.width();
+	const auto height = image.height();
+	auto bytes = image.bits();
 	if (perLine != width * 4) {
-		auto bytes = image.bits();
-		for (auto i = 0; i != image.height(); ++i) {
-			convert(
-				reinterpret_cast<uint*>(bytes),
-				reinterpret_cast<const uint*>(bytes),
-				width,
-				layout,
-				nullptr);
+		for (auto i = 0; i != height; ++i) {
+			PremultiplyLine(bytes, bytes, width);
 			bytes += perLine;
 		}
 	} else {
-		convert(
-			reinterpret_cast<uint*>(image.bits()),
-			reinterpret_cast<const uint*>(image.bits()),
-			image.width() * image.height(),
-			layout,
-			nullptr);
+		PremultiplyLine(bytes, bytes, width * height);
 	}
 }
 

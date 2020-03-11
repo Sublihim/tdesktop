@@ -12,7 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_values.h"
 #include "info/profile/info_profile_icon.h"
 #include "info/profile/info_profile_values.h"
-#include "info/profile/info_profile_button.h"
 #include "info/profile/info_profile_members_controllers.h"
 #include "info/members/info_members_widget.h"
 #include "info/info_content_widget.h"
@@ -124,7 +123,7 @@ void Members::setupHeader() {
 		st::infoMembersHeader);
 	auto parent = _header.data();
 
-	_openMembers = Ui::CreateChild<Button>(
+	_openMembers = Ui::CreateChild<Ui::SettingsButton>(
 		parent,
 		rpl::single(QString()));
 
@@ -324,7 +323,7 @@ void Members::updateHeaderControlsGeometry(int newWidth) {
 
 void Members::addMember() {
 	if (const auto chat = _peer->asChat()) {
-		AddParticipantsBoxController::Start(chat);
+		AddParticipantsBoxController::Start(_controller, chat);
 	} else if (const auto channel = _peer->asChannel()) {
 		const auto state = _listController->saveState();
 		const auto users = ranges::view::all(
@@ -333,6 +332,7 @@ void Members::addMember() {
 			return peer->asUser();
 		}) | ranges::to_vector;
 		AddParticipantsBoxController::Start(
+			_controller,
 			channel,
 			{ users.begin(), users.end() });
 	}

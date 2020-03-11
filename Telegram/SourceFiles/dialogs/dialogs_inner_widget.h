@@ -12,8 +12,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/animations.h"
 #include "ui/rp_widget.h"
 #include "base/flags.h"
+#include "base/object_ptr.h"
+#include "mtproto/mtproto_rpc_sender.h"
 
-class AuthSession;
+namespace Main {
+class Session;
+} // namespace Main
 
 namespace Ui {
 class IconButton;
@@ -34,6 +38,7 @@ namespace Dialogs {
 class Row;
 class FakeRow;
 class IndexedList;
+enum class Mode;
 
 struct ChosenRow {
 	Key key;
@@ -68,6 +73,7 @@ public:
 
 	bool searchReceived(
 		const QVector<MTPMessage> &result,
+		HistoryItem *inject,
 		SearchRequestType type,
 		int fullCount);
 	void peerSearchReceived(
@@ -163,7 +169,7 @@ private:
 		NextOrOriginal,
 	};
 
-	AuthSession &session() const;
+	Main::Session &session() const;
 
 	void dialogRowReplaced(Row *oldRow, Row *newRow);
 

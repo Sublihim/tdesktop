@@ -10,12 +10,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_title.h"
 #include "ui/rp_widget.h"
 #include "base/timer.h"
+#include "base/object_ptr.h"
 
-class BoxContent;
+#include <QtWidgets/QSystemTrayIcon>
 
 namespace Main {
 class Account;
 } // namespace Main
+
+namespace Ui {
+class BoxContent;
+} // namespace Ui
 
 namespace Window {
 
@@ -40,10 +45,6 @@ public:
 	}
 	Main::Account &account() const;
 	Window::SessionController *sessionController() const;
-	void setInactivePress(bool inactive);
-	bool wasInactivePress() const {
-		return _wasInactivePress;
-	}
 
 	bool hideNoQuit();
 
@@ -92,6 +93,8 @@ public:
 
 	virtual void updateWindowIcon();
 
+	void clearWidgets();
+
 public slots:
 	bool minimizeToTray();
 	void updateGlobalMenu() {
@@ -115,7 +118,6 @@ protected:
 	virtual void handleActiveChangedHook() {
 	}
 
-	void clearWidgets();
 	virtual void clearWidgetsHook() {
 	}
 
@@ -135,6 +137,8 @@ protected:
 	virtual void updateGlobalMenuHook() {
 	}
 
+	virtual void initTrayMenuHook() {
+	}
 	virtual bool hasTrayIcon() const {
 		return false;
 	}
@@ -145,6 +149,13 @@ protected:
 	}
 
 	virtual void updateControlsGeometry();
+
+	virtual void createGlobalMenu() {
+	}
+	virtual void initShadows() {
+	}
+	virtual void firstShadowsUpdate() {
+	}
 
 	// This one is overriden in Windows for historical reasons.
 	virtual int32 screenNameChecksum(const QString &name) const;
@@ -175,7 +186,7 @@ private:
 	object_ptr<Ui::RpWidget> _outdated;
 	object_ptr<TWidget> _body;
 	object_ptr<TWidget> _rightColumn = { nullptr };
-	QPointer<BoxContent> _termsBox;
+	QPointer<Ui::BoxContent> _termsBox;
 
 	QIcon _icon;
 	bool _usingSupportIcon = false;
@@ -183,8 +194,6 @@ private:
 
 	bool _isActive = false;
 	base::Timer _isActiveTimer;
-	bool _wasInactivePress = false;
-	base::Timer _inactivePressTimer;
 
 	base::Observable<void> _dragFinished;
 	rpl::event_stream<> _leaveEvents;

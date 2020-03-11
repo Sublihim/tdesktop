@@ -15,10 +15,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_drafts.h"
 #include "data/data_user.h"
 #include "boxes/send_files_box.h"
-#include "window/themes/window_theme.h"
+#include "base/platform/base_platform_info.h"
 #include "ui/widgets/input_fields.h"
 #include "ui/emoji_config.h"
 #include "export/export_settings.h"
+#include "api/api_hash.h"
 #include "core/crash_reports.h"
 #include "core/update_checker.h"
 #include "observer_peer.h"
@@ -26,15 +27,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "lang/lang_keys.h"
 #include "lang/lang_cloud_manager.h"
+#include "main/main_account.h"
 #include "media/audio/media_audio.h"
 #include "mtproto/dc_options.h"
 #include "core/application.h"
 #include "apiwrap.h"
-#include "auth_session.h"
+#include "main/main_session.h"
+#include "window/themes/window_theme.h"
 #include "window/window_session_controller.h"
 #include "base/flags.h"
 #include "data/data_session.h"
 #include "history/history.h"
+#include "facades.h"
+
+#include <QtCore/QBuffer>
+#include <QtCore/QSaveFile>
+#include <QtCore/QtEndian>
+#include <QtCore/QDirIterator>
+
+#ifndef Q_OS_WIN
+#include <unistd.h>
+#endif // Q_OS_WIN
 
 extern "C" {
 #include <openssl/evp.h>
@@ -63,6 +76,8 @@ constexpr auto kSinglePeerTypeEmpty = qint32(0);
 constexpr auto kStickersVersionTag = quint32(-1);
 constexpr auto kStickersSerializeVersion = 1;
 constexpr auto kMaxSavedStickerSetsCount = 1000;
+
+const auto kThemeNewPathRelativeTag = qstr("special://new_tag");
 
 using Database = Storage::Cache::Database;
 using FileKey = quint64;
@@ -104,10 +119,18 @@ inline constexpr auto is_flag_type(FileOption) { return true; };
 
 bool keyAlreadyUsed(QString &name, FileOptions options = FileOption::User | FileOption::Safe) {
 	name += '0';
-	if (QFileInfo(name).exists()) return true;
+	if (QFileInfo(name).exists()) {
+		return true;
+	}
 	if (options & (FileOption::Safe)) {
 		name[name.size() - 1] = '1';
-		return QFileInfo(name).exists();
+		if (QFileInfo(name).exists()) {
+			return true;
+		}
+		name[name.size() - 1] = 's';
+		if (QFileInfo(name).exists()) {
+			return true;
+		}
 	}
 	return false;
 }
@@ -145,6 +168,8 @@ void clearKey(const FileKey &key, FileOptions options = FileOption::User | FileO
 	QFile::remove(name);
 	if (options & FileOption::Safe) {
 		name[name.size() - 1] = '1';
+		QFile::remove(name);
+		name[name.size() - 1] = 's';
 		QFile::remove(name);
 	}
 }
@@ -226,10 +251,12 @@ struct EncryptedDescriptor {
 };
 
 struct FileWriteDescriptor {
-	FileWriteDescriptor(const FileKey &key, FileOptions options = FileOption::User | FileOption::Safe) {
+	FileWriteDescriptor(const FileKey &key, FileOptions options = FileOption::User | FileOption::Safe)
+	: file((options & FileOption::Safe) ? (QFileDevice&)saveFile : plainFile) {
 		init(toFilePart(key), options);
 	}
-	FileWriteDescriptor(const QString &name, FileOptions options = FileOption::User | FileOption::Safe) {
+	FileWriteDescriptor(const QString &name, FileOptions options = FileOption::User | FileOption::Safe)
+	: file((options & FileOption::Safe) ? (QFileDevice&)saveFile : plainFile) {
 		init(name, options);
 	}
 	void init(const QString &name, FileOptions options) {
@@ -239,29 +266,13 @@ struct FileWriteDescriptor {
 			if (!_working()) return;
 		}
 
-		// detect order of read attempts and file version
-		QString toTry[2];
-		toTry[0] = ((options & FileOption::User) ? _userBasePath : _basePath) + name + '0';
+		const auto base = ((options & FileOption::User) ? _userBasePath : _basePath) + name;
 		if (options & FileOption::Safe) {
-			toTry[1] = ((options & FileOption::User) ? _userBasePath : _basePath) + name + '1';
-			QFileInfo toTry0(toTry[0]);
-			QFileInfo toTry1(toTry[1]);
-			if (toTry0.exists()) {
-				if (toTry1.exists()) {
-					QDateTime mod0 = toTry0.lastModified(), mod1 = toTry1.lastModified();
-					if (mod0 > mod1) {
-						qSwap(toTry[0], toTry[1]);
-					}
-				} else {
-					qSwap(toTry[0], toTry[1]);
-				}
-				toDelete = toTry[1];
-			} else if (toTry1.exists()) {
-				toDelete = toTry[1];
-			}
+			toDelete = base;
+			saveFile.setFileName(base + 's');
+		} else {
+			plainFile.setFileName(base + '0');
 		}
-
-		file.setFileName(toTry[0]);
 		if (file.open(QIODevice::WriteOnly)) {
 			file.write(tdfMagic, tdfMagicLen);
 			qint32 version = AppVersion;
@@ -316,13 +327,21 @@ struct FileWriteDescriptor {
 		md5.feed(&version, sizeof(version));
 		md5.feed(tdfMagic, tdfMagicLen);
 		file.write((const char*)md5.result(), 0x10);
-		file.close();
+
+		if (saveFile.isOpen()) {
+			saveFile.commit();
+		} else {
+			plainFile.close();
+		}
 
 		if (!toDelete.isEmpty()) {
-			QFile::remove(toDelete);
+			QFile::remove(toDelete + '0');
+			QFile::remove(toDelete + '1');
 		}
 	}
-	QFile file;
+	QFile plainFile;
+	QSaveFile saveFile;
+	QFileDevice &file;
 	QDataStream stream;
 
 	QString toDelete;
@@ -342,25 +361,35 @@ bool readFile(FileReadDescriptor &result, const QString &name, FileOptions optio
 		if (!_working()) return false;
 	}
 
+	const auto base = ((options & FileOption::User) ? _userBasePath : _basePath) + name;
+
 	// detect order of read attempts
 	QString toTry[2];
-	toTry[0] = ((options & FileOption::User) ? _userBasePath : _basePath) + name + '0';
 	if (options & FileOption::Safe) {
-		QFileInfo toTry0(toTry[0]);
-		if (toTry0.exists()) {
-			toTry[1] = ((options & FileOption::User) ? _userBasePath : _basePath) + name + '1';
-			QFileInfo toTry1(toTry[1]);
-			if (toTry1.exists()) {
-				QDateTime mod0 = toTry0.lastModified(), mod1 = toTry1.lastModified();
-				if (mod0 < mod1) {
-					qSwap(toTry[0], toTry[1]);
+		const auto modern = base + 's';
+		if (QFileInfo(modern).exists()) {
+			toTry[0] = modern;
+		} else {
+			// Legacy way.
+			toTry[0] = base + '0';
+			QFileInfo toTry0(toTry[0]);
+			if (toTry0.exists()) {
+				toTry[1] = ((options & FileOption::User) ? _userBasePath : _basePath) + name + '1';
+				QFileInfo toTry1(toTry[1]);
+				if (toTry1.exists()) {
+					QDateTime mod0 = toTry0.lastModified(), mod1 = toTry1.lastModified();
+					if (mod0 < mod1) {
+						qSwap(toTry[0], toTry[1]);
+					}
+				} else {
+					toTry[1] = QString();
 				}
 			} else {
-				toTry[1] = QString();
+				toTry[0][toTry[0].size() - 1] = '1';
 			}
-		} else {
-			toTry[0][toTry[0].size() - 1] = '1';
 		}
+	} else {
+		toTry[0] = base + '0';
 	}
 	for (int32 i = 0; i < 2; ++i) {
 		QString fname(toTry[i]);
@@ -549,7 +578,7 @@ enum {
 	// 0x10 reserved
 	dbiDefaultAttach = 0x11,
 	dbiCatsAndDogs = 0x12,
-	dbiReplaceEmoji = 0x13,
+	dbiReplaceEmojiOld = 0x13,
 	dbiAskDownloadPath = 0x14,
 	dbiDownloadPathOld = 0x15,
 	dbiScaleOld = 0x16,
@@ -579,7 +608,7 @@ enum {
 	dbiAutoDownloadOld = 0x34,
 	dbiSavedGifsLimit = 0x35,
 	dbiShowingSavedGifsOld = 0x36,
-	dbiAutoPlay = 0x37,
+	dbiAutoPlayOld = 0x37,
 	dbiAdaptiveForWide = 0x38,
 	dbiHiddenPinnedMessages = 0x39,
 	dbiRecentEmoji = 0x3a,
@@ -597,13 +626,13 @@ enum {
 	dbiDcOptions = 0x4a,
 	dbiMtpAuthorization = 0x4b,
 	dbiLastSeenWarningSeenOld = 0x4c,
-	dbiAuthSessionSettings = 0x4d,
+	dbiSessionSettings = 0x4d,
 	dbiLangPackKey = 0x4e,
 	dbiConnectionType = 0x4f,
 	dbiStickersFavedLimit = 0x50,
-	dbiSuggestStickersByEmoji = 0x51,
-	dbiSuggestEmoji = 0x52,
-	dbiTxtDomainString = 0x53,
+	dbiSuggestStickersByEmojiOld = 0x51,
+	dbiSuggestEmojiOld = 0x52,
+	dbiTxtDomainStringOld = 0x53,
 	dbiThemeKey = 0x54,
 	dbiTileBackground = 0x55,
 	dbiCacheSettingsOld = 0x56,
@@ -613,6 +642,8 @@ enum {
 	dbiLanguagesKey = 0x5a,
 	dbiCallSettings = 0x5b,
 	dbiCacheSettings = 0x5c,
+	dbiTxtDomainString = 0x5d,
+	dbiApplicationSettings = 0x5e,
 
 	dbiEncryptedWithSalt = 333,
 	dbiEncrypted = 444,
@@ -663,7 +694,7 @@ FileKey _themeKeyDay = 0;
 FileKey _themeKeyNight = 0;
 
 // Theme key legacy may be read in start() with settings.
-// But it should be moved to keyDay or keyNight inside loadTheme()
+// But it should be moved to keyDay or keyNight inside InitialLoadTheme()
 // and never used after.
 FileKey _themeKeyLegacy = 0;
 
@@ -698,12 +729,12 @@ enum class WriteMapWhen {
 	Soon,
 };
 
-std::unique_ptr<AuthSessionSettings> StoredAuthSessionCache;
-AuthSessionSettings &GetStoredAuthSessionCache() {
-	if (!StoredAuthSessionCache) {
-		StoredAuthSessionCache = std::make_unique<AuthSessionSettings>();
+std::unique_ptr<Main::Settings> StoredSessionSettings;
+Main::Settings &GetStoredSessionSettings() {
+	if (!StoredSessionSettings) {
+		StoredSessionSettings = std::make_unique<Main::Settings>();
 	}
-	return *StoredAuthSessionCache;
+	return *StoredSessionSettings;
 }
 
 void _writeMap(WriteMapWhen when = WriteMapWhen::Soon);
@@ -924,6 +955,14 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		context.dcOptions.constructFromSerialized(serialized);
 	} break;
 
+	case dbiApplicationSettings: {
+		auto serialized = QByteArray();
+		stream >> serialized;
+		if (!_checkStreamStatus(stream)) return false;
+
+		Core::App().settings().constructFromSerialized(serialized);
+	} break;
+
 	case dbiChatSizeMax: {
 		qint32 maxSize;
 		stream >> maxSize;
@@ -971,8 +1010,8 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		if (!_checkStreamStatus(stream)) return false;
 
 		DEBUG_LOG(("MTP Info: user found, dc %1, uid %2").arg(dcId).arg(userId));
-		Core::App().setMtpMainDcId(dcId);
-		Core::App().setAuthSessionUserId(userId);
+		Core::App().activeAccount().setMtpMainDcId(dcId);
+		Core::App().activeAccount().setSessionUserId(userId);
 	} break;
 
 	case dbiKey: {
@@ -981,7 +1020,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		auto key = Serialize::read<MTP::AuthKey::Data>(stream);
 		if (!_checkStreamStatus(stream)) return false;
 
-		Core::App().setMtpKey(dcId, key);
+		Core::App().activeAccount().setMtpKey(dcId, key);
 	} break;
 
 	case dbiMtpAuthorization: {
@@ -989,7 +1028,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> serialized;
 		if (!_checkStreamStatus(stream)) return false;
 
-		Core::App().setMtpAuthorization(serialized);
+		Core::App().activeAccount().setMtpAuthorization(serialized);
 	} break;
 
 	case dbiAutoStart: {
@@ -1081,7 +1120,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		if (!_checkStreamStatus(stream)) return false;
 
 		using namespace Data::AutoDownload;
-		auto &settings = GetStoredAuthSessionCache().autoDownload();
+		auto &settings = GetStoredSessionSettings().autoDownload();
 		const auto disabled = [](qint32 value, qint32 mask) {
 			return (value & mask) != 0;
 		};
@@ -1098,16 +1137,34 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		};
 		set(Type::Photo, photo);
 		set(Type::VoiceMessage, audio);
-		set(Type::GIF, gif);
-		set(Type::VideoMessage, gif);
+		set(Type::AutoPlayGIF, gif);
+		set(Type::AutoPlayVideoMessage, gif);
 	} break;
 
-	case dbiAutoPlay: {
+	case dbiAutoPlayOld: {
 		qint32 gif;
 		stream >> gif;
 		if (!_checkStreamStatus(stream)) return false;
 
-		cSetAutoPlayGif(gif == 1);
+		if (!gif) {
+			using namespace Data::AutoDownload;
+			auto &settings = GetStoredSessionSettings().autoDownload();
+			const auto types = {
+				Type::AutoPlayGIF,
+				Type::AutoPlayVideo,
+				Type::AutoPlayVideoMessage,
+			};
+			const auto sources = {
+				Source::User,
+				Source::Group,
+				Source::Channel
+			};
+			for (const auto source : sources) {
+				for (const auto type : types) {
+					settings.setBytesLimit(source, type, 0);
+				}
+			}
+		}
 	} break;
 
 	case dbiDialogsMode: {
@@ -1139,7 +1196,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		GetStoredAuthSessionCache().setIncludeMutedCounter(v == 1);
+		GetStoredSessionSettings().setIncludeMutedCounter(v == 1);
 	} break;
 
 	case dbiShowingSavedGifsOld: {
@@ -1192,7 +1249,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		GetStoredAuthSessionCache().setDialogsWidthRatio(v / 1000000.);
+		GetStoredSessionSettings().setDialogsWidthRatio(v / 1000000.);
 	} break;
 
 	case dbiLastSeenWarningSeenOld: {
@@ -1200,15 +1257,15 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		GetStoredAuthSessionCache().setLastSeenWarningSeen(v == 1);
+		GetStoredSessionSettings().setLastSeenWarningSeen(v == 1);
 	} break;
 
-	case dbiAuthSessionSettings: {
+	case dbiSessionSettings: {
 		QByteArray v;
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		GetStoredAuthSessionCache().constructFromSerialized(v);
+		GetStoredSessionSettings().constructFromSerialized(v);
 	} break;
 
 	case dbiWorkMode: {
@@ -1226,6 +1283,12 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		Global::RefWorkMode().set(newMode());
 	} break;
 
+	case dbiTxtDomainStringOld: {
+		QString v;
+		stream >> v;
+		if (!_checkStreamStatus(stream)) return false;
+	} break;
+
 	case dbiTxtDomainString: {
 		QString v;
 		stream >> v;
@@ -1239,7 +1302,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		ProxyData proxy;
+		MTP::ProxyData proxy;
 		switch (v) {
 		case dbictHttpProxy:
 		case dbictTcpProxy: {
@@ -1249,14 +1312,14 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 
 			proxy.port = uint32(port);
 			proxy.type = (v == dbictTcpProxy)
-				? ProxyData::Type::Socks5
-				: ProxyData::Type::Http;
+				? MTP::ProxyData::Type::Socks5
+				: MTP::ProxyData::Type::Http;
 		} break;
 		};
-		Global::SetSelectedProxy(proxy ? proxy : ProxyData());
+		Global::SetSelectedProxy(proxy ? proxy : MTP::ProxyData());
 		Global::SetProxySettings(proxy
-			? ProxyData::Settings::Enabled
-			: ProxyData::Settings::System);
+			? MTP::ProxyData::Settings::Enabled
+			: MTP::ProxyData::Settings::System);
 		if (proxy) {
 			Global::SetProxiesList({ 1, proxy });
 		} else {
@@ -1274,20 +1337,20 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 
 		const auto readProxy = [&] {
 			qint32 proxyType, port;
-			ProxyData proxy;
+			MTP::ProxyData proxy;
 			stream >> proxyType >> proxy.host >> port >> proxy.user >> proxy.password;
 			proxy.port = port;
 			proxy.type = (proxyType == dbictTcpProxy)
-				? ProxyData::Type::Socks5
+				? MTP::ProxyData::Type::Socks5
 				: (proxyType == dbictHttpProxy)
-				? ProxyData::Type::Http
-				: (proxyType == kProxyTypeShift + int(ProxyData::Type::Socks5))
-				? ProxyData::Type::Socks5
-				: (proxyType == kProxyTypeShift + int(ProxyData::Type::Http))
-				? ProxyData::Type::Http
-				: (proxyType == kProxyTypeShift + int(ProxyData::Type::Mtproto))
-				? ProxyData::Type::Mtproto
-				: ProxyData::Type::None;
+				? MTP::ProxyData::Type::Http
+				: (proxyType == kProxyTypeShift + int(MTP::ProxyData::Type::Socks5))
+				? MTP::ProxyData::Type::Socks5
+				: (proxyType == kProxyTypeShift + int(MTP::ProxyData::Type::Http))
+				? MTP::ProxyData::Type::Http
+				: (proxyType == kProxyTypeShift + int(MTP::ProxyData::Type::Mtproto))
+				? MTP::ProxyData::Type::Mtproto
+				: MTP::ProxyData::Type::None;
 			return proxy;
 		};
 		if (connectionType == dbictProxiesListOld
@@ -1302,7 +1365,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 				index -= (index > 0 ? count : -count);
 			}
 
-			auto list = std::vector<ProxyData>();
+			auto list = std::vector<MTP::ProxyData>();
 			for (auto i = 0; i < count; ++i) {
 				const auto proxy = readProxy();
 				if (proxy) {
@@ -1320,25 +1383,29 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 			if (connectionType == dbictProxiesListOld) {
 				settings = static_cast<qint32>(
 					(index > 0 && index <= list.size()
-						? ProxyData::Settings::Enabled
-						: ProxyData::Settings::System));
+						? MTP::ProxyData::Settings::Enabled
+						: MTP::ProxyData::Settings::System));
 				index = std::abs(index);
 			}
 			if (index > 0 && index <= list.size()) {
 				Global::SetSelectedProxy(list[index - 1]);
 			} else {
-				Global::SetSelectedProxy(ProxyData());
+				Global::SetSelectedProxy(MTP::ProxyData());
 			}
 
-			const auto unchecked = static_cast<ProxyData::Settings>(settings);
+			const auto unchecked = static_cast<MTP::ProxyData::Settings>(settings);
 			switch (unchecked) {
-			case ProxyData::Settings::Disabled:
-			case ProxyData::Settings::System:
-			case ProxyData::Settings::Enabled:
+			case MTP::ProxyData::Settings::Enabled:
+				Global::SetProxySettings(Global::SelectedProxy()
+					? MTP::ProxyData::Settings::Enabled
+					: MTP::ProxyData::Settings::System);
+				break;
+			case MTP::ProxyData::Settings::Disabled:
+			case MTP::ProxyData::Settings::System:
 				Global::SetProxySettings(unchecked);
 				break;
 			default:
-				Global::SetProxySettings(ProxyData::Settings::System);
+				Global::SetProxySettings(MTP::ProxyData::Settings::System);
 				break;
 			}
 			Global::SetUseProxyForCalls(calls == 1);
@@ -1352,14 +1419,14 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 				Global::SetSelectedProxy(proxy);
 				if (connectionType == dbictTcpProxy
 					|| connectionType == dbictHttpProxy) {
-					Global::SetProxySettings(ProxyData::Settings::Enabled);
+					Global::SetProxySettings(MTP::ProxyData::Settings::Enabled);
 				} else {
-					Global::SetProxySettings(ProxyData::Settings::System);
+					Global::SetProxySettings(MTP::ProxyData::Settings::System);
 				}
 			} else {
 				Global::SetProxiesList({});
-				Global::SetSelectedProxy(ProxyData());
-				Global::SetProxySettings(ProxyData::Settings::System);
+				Global::SetSelectedProxy(MTP::ProxyData());
+				Global::SetProxySettings(MTP::ProxyData::Settings::System);
 			}
 		}
 		Core::App().refreshGlobalProxy();
@@ -1447,7 +1514,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 			constexpr auto kOneAndHalf = 3;
 			constexpr auto kTwo = 4;
 			switch (v) {
-			case kAuto: return kInterfaceScaleAuto;
+			case kAuto: return style::kScaleAuto;
 			case kOne: return 100;
 			case kOneAndQuarter: return 125;
 			case kOneAndHalf: return 150;
@@ -1463,7 +1530,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		if (!_checkStreamStatus(stream)) return false;
 
 		// If cConfigScale() has value then it was set via command line.
-		if (cConfigScale() == kInterfaceScaleAuto) {
+		if (cConfigScale() == style::kScaleAuto) {
 			SetScaleChecked(v);
 		}
 	} break;
@@ -1528,7 +1595,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 			&& unchecked != SendSettings::CtrlEnter) {
 			return false;
 		}
-		GetStoredAuthSessionCache().setSendSubmitWay(unchecked);
+		GetStoredSessionSettings().setSendSubmitWay(unchecked);
 	} break;
 
 	case dbiCatsAndDogs: { // deprecated
@@ -1578,28 +1645,28 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		Global::RefLocalPasscodeChanged().notify();
 	} break;
 
-	case dbiReplaceEmoji: {
+	case dbiReplaceEmojiOld: {
 		qint32 v;
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		Global::SetReplaceEmoji(v == 1);
+		GetStoredSessionSettings().setReplaceEmoji(v == 1);
 	} break;
 
-	case dbiSuggestEmoji: {
+	case dbiSuggestEmojiOld: {
 		qint32 v;
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		Global::SetSuggestEmoji(v == 1);
+		GetStoredSessionSettings().setSuggestEmoji(v == 1);
 	} break;
 
-	case dbiSuggestStickersByEmoji: {
+	case dbiSuggestStickersByEmojiOld: {
 		qint32 v;
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		Global::SetSuggestStickersByEmoji(v == 1);
+		GetStoredSessionSettings().setSuggestStickersByEmoji(v == 1);
 	} break;
 
 	case dbiDefaultAttach: {
@@ -1659,7 +1726,7 @@ bool _readSetting(quint32 blockId, QDataStream &stream, int version, ReadSetting
 		stream >> v;
 		if (!_checkStreamStatus(stream)) return false;
 
-		GetStoredAuthSessionCache().setSendFilesWay((v == 1)
+		GetStoredSessionSettings().setSendFilesWay((v == 1)
 			? SendFilesWay::Album
 			: SendFilesWay::Files);
 	} break;
@@ -2002,7 +2069,10 @@ bool _readOldMtpData(bool remove, ReadSettingsContext &context) {
 }
 
 void _writeUserSettings() {
-	if (_readingUserSettings) {
+	if (!_userWorking()) {
+		LOG(("App Error: attempt to write user settings too early!"));
+		return;
+	} else if (_readingUserSettings) {
 		LOG(("App Error: attempt to write settings while reading them!"));
 		return;
 	}
@@ -2016,14 +2086,14 @@ void _writeUserSettings() {
 
 	auto recentEmojiPreloadData = cRecentEmojiPreload();
 	if (recentEmojiPreloadData.isEmpty()) {
-		recentEmojiPreloadData.reserve(Ui::Emoji::GetRecent().size());
-		for (auto &item : Ui::Emoji::GetRecent()) {
+		recentEmojiPreloadData.reserve(GetRecentEmoji().size());
+		for (auto &item : GetRecentEmoji()) {
 			recentEmojiPreloadData.push_back(qMakePair(item.first->id(), item.second));
 		}
 	}
-	auto userDataInstance = StoredAuthSessionCache
-		? StoredAuthSessionCache.get()
-		: Core::App().getAuthSessionSettings();
+	auto userDataInstance = StoredSessionSettings
+		? StoredSessionSettings.get()
+		: Core::App().activeAccount().getSessionSettings();
 	auto userData = userDataInstance
 		? userDataInstance->serialize()
 		: QByteArray();
@@ -2059,9 +2129,6 @@ void _writeUserSettings() {
 		<< qint32(Window::Theme::Background()->tileNight() ? 1 : 0);
 	data.stream << quint32(dbiAdaptiveForWide) << qint32(Global::AdaptiveForWide() ? 1 : 0);
 	data.stream << quint32(dbiAutoLock) << qint32(Global::AutoLock());
-	data.stream << quint32(dbiReplaceEmoji) << qint32(Global::ReplaceEmoji() ? 1 : 0);
-	data.stream << quint32(dbiSuggestEmoji) << qint32(Global::SuggestEmoji() ? 1 : 0);
-	data.stream << quint32(dbiSuggestStickersByEmoji) << qint32(Global::SuggestStickersByEmoji() ? 1 : 0);
 	data.stream << quint32(dbiSoundNotify) << qint32(Global::SoundNotify());
 	data.stream << quint32(dbiDesktopNotify) << qint32(Global::DesktopNotify());
 	data.stream << quint32(dbiNotifyView) << qint32(Global::NotifyView());
@@ -2075,11 +2142,10 @@ void _writeUserSettings() {
 	data.stream << quint32(dbiVideoVolume) << qint32(qRound(Global::VideoVolume() * 1e6));
 	data.stream << quint32(dbiDialogsMode) << qint32(Global::DialogsModeEnabled() ? 1 : 0) << static_cast<qint32>(Global::DialogsMode());
 	data.stream << quint32(dbiModerateMode) << qint32(Global::ModerateModeEnabled() ? 1 : 0);
-	data.stream << quint32(dbiAutoPlay) << qint32(cAutoPlayGif() ? 1 : 0);
 	data.stream << quint32(dbiUseExternalVideoPlayer) << qint32(cUseExternalVideoPlayer());
 	data.stream << quint32(dbiCacheSettings) << qint64(_cacheTotalSizeLimit) << qint32(_cacheTotalTimeLimit) << qint64(_cacheBigFileTotalSizeLimit) << qint32(_cacheBigFileTotalTimeLimit);
 	if (!userData.isEmpty()) {
-		data.stream << quint32(dbiAuthSessionSettings) << userData;
+		data.stream << quint32(dbiSessionSettings) << userData;
 	}
 	data.stream << quint32(dbiPlaybackSpeed) << qint32(Global::VoiceMsgPlaybackDoubled() ? 2 : 1);
 
@@ -2146,7 +2212,7 @@ void _writeMtpData() {
 		return;
 	}
 
-	auto mtpAuthorizationSerialized = Core::App().serializeMtpAuthorization();
+	auto mtpAuthorizationSerialized = Core::App().activeAccount().serializeMtpAuthorization();
 
 	quint32 size = sizeof(quint32) + Serialize::bytearraySize(mtpAuthorizationSerialized);
 
@@ -2377,8 +2443,8 @@ ReadMapState _readMap(const QByteArray &pass) {
 	_readMtpData();
 
 	DEBUG_LOG(("selfSerialized set: %1").arg(selfSerialized.size()));
-	Core::App().setAuthSessionFromStorage(
-		std::move(StoredAuthSessionCache),
+	Core::App().activeAccount().setSessionFromStorage(
+		std::move(StoredSessionSettings),
 		std::move(selfSerialized),
 		_oldMapVersion);
 
@@ -2425,7 +2491,7 @@ void _writeMap(WriteMapWhen when) {
 
 	uint32 mapSize = 0;
 	const auto self = [] {
-		if (!AuthSession::Exists()) {
+		if (!Main::Session::Exists()) {
 			DEBUG_LOG(("AuthSelf Warning: Session does not exist."));
 			return QByteArray();
 		}
@@ -2529,7 +2595,8 @@ void finish() {
 	}
 }
 
-void loadTheme();
+void InitialLoadTheme();
+bool ApplyDefaultNightMode();
 void readLangPack();
 
 void start() {
@@ -2549,7 +2616,10 @@ void start() {
 		_readOldMtpData(false, context); // needed further in _readMtpData
 		applyReadContext(std::move(context));
 
-		return writeSettings();
+		if (!ApplyDefaultNightMode()) {
+			writeSettings();
+		}
+		return;
 	}
 	LOG(("App Info: reading settings..."));
 
@@ -2587,7 +2657,7 @@ void start() {
 	_oldSettingsVersion = settingsData.version;
 	_settingsSalt = salt;
 
-	loadTheme();
+	InitialLoadTheme();
 	readLangPack();
 
 	applyReadContext(std::move(context));
@@ -2609,17 +2679,19 @@ void writeSettings() {
 	}
 	settings.writeData(_settingsSalt);
 
-	auto dcOptionsSerialized = Core::App().dcOptions()->serialize();
+	const auto dcOptionsSerialized = Core::App().dcOptions()->serialize();
+	const auto applicationSettings = Core::App().settings().serialize();
 
 	quint32 size = 12 * (sizeof(quint32) + sizeof(qint32));
 	size += sizeof(quint32) + Serialize::bytearraySize(dcOptionsSerialized);
+	size += sizeof(quint32) + Serialize::bytearraySize(applicationSettings);
 	size += sizeof(quint32) + Serialize::stringSize(cLoggedPhoneNumber());
 	size += sizeof(quint32) + Serialize::stringSize(Global::TxtDomainString());
 
 	auto &proxies = Global::RefProxiesList();
 	const auto &proxy = Global::SelectedProxy();
 	auto proxyIt = ranges::find(proxies, proxy);
-	if (proxy.type != ProxyData::Type::None
+	if (proxy.type != MTP::ProxyData::Type::None
 		&& proxyIt == end(proxies)) {
 		proxies.push_back(proxy);
 		proxyIt = end(proxies) - 1;
@@ -2651,6 +2723,7 @@ void writeSettings() {
 	data.stream << quint32(dbiLastUpdateCheck) << qint32(cLastUpdateCheck());
 	data.stream << quint32(dbiScalePercent) << qint32(cConfigScale());
 	data.stream << quint32(dbiDcOptions) << dcOptionsSerialized;
+	data.stream << quint32(dbiApplicationSettings) << applicationSettings;
 	data.stream << quint32(dbiLoggedPhoneNumber) << cLoggedPhoneNumber();
 	data.stream << quint32(dbiTxtDomainString) << Global::TxtDomainString();
 	data.stream << quint32(dbiAnimationsDisabled) << qint32(anim::Disabled() ? 1 : 0);
@@ -2779,7 +2852,7 @@ void reset() {
 	_cacheTotalTimeLimit = Database::Settings().totalTimeLimit;
 	_cacheBigFileTotalSizeLimit = Database::Settings().totalSizeLimit;
 	_cacheBigFileTotalTimeLimit = Database::Settings().totalTimeLimit;
-	StoredAuthSessionCache.reset();
+	StoredSessionSettings.reset();
 	_mapChanged = true;
 	_writeMap(WriteMapWhen::Now);
 
@@ -2823,7 +2896,7 @@ base::flat_set<QString> CollectGoodNames() {
 		_exportSettingsKey,
 		_trustedBotsKey
 	};
-	auto result = base::flat_set<QString>{ "map0", "map1" };
+	auto result = base::flat_set<QString>{ "map0", "map1", "maps" };
 	const auto push = [&](FileKey key) {
 		if (!key) {
 			return;
@@ -2831,6 +2904,8 @@ base::flat_set<QString> CollectGoodNames() {
 		auto name = toFilePart(key) + '0';
 		result.emplace(name);
 		name[name.size() - 1] = '1';
+		result.emplace(name);
+		name[name.size() - 1] = 's';
 		result.emplace(name);
 	};
 	for (const auto &value : _draftsMap) {
@@ -3846,13 +3921,11 @@ void readArchivedStickers() {
 }
 
 int32 countDocumentVectorHash(const QVector<DocumentData*> vector) {
-	uint32 acc = 0;
-	for_const (auto doc, vector) {
-		auto docId = doc->id;
-		acc = (acc * 20261) + uint32(docId >> 32);
-		acc = (acc * 20261) + uint32(docId & 0xFFFFFFFF);
+	auto result = Api::HashInit();
+	for (const auto document : vector) {
+		Api::HashUpdate(result, document->id);
 	}
-	return int32(acc & 0x7FFFFFFF);
+	return Api::HashFinalize(result);
 }
 
 int32 countSpecialStickerSetHash(uint64 setId) {
@@ -3865,7 +3938,7 @@ int32 countSpecialStickerSetHash(uint64 setId) {
 }
 
 int32 countStickersHash(bool checkOutdatedInfo) {
-	uint32 acc = 0;
+	auto result = Api::HashInit();
 	bool foundOutdated = false;
 	auto &sets = Auth().data().stickerSets();
 	auto &order = Auth().data().stickerSetsOrder();
@@ -3876,11 +3949,13 @@ int32 countStickersHash(bool checkOutdatedInfo) {
 				foundOutdated = true;
 			} else if (!(j->flags & MTPDstickerSet_ClientFlag::f_special)
 				&& !(j->flags & MTPDstickerSet::Flag::f_archived)) {
-				acc = (acc * 20261) + j->hash;
+				Api::HashUpdate(result, j->hash);
 			}
 		}
 	}
-	return (!checkOutdatedInfo || !foundOutdated) ? int32(acc & 0x7FFFFFFF) : 0;
+	return (!checkOutdatedInfo || !foundOutdated)
+		? Api::HashFinalize(result)
+		: 0;
 }
 
 int32 countRecentStickersHash() {
@@ -3892,19 +3967,18 @@ int32 countFavedStickersHash() {
 }
 
 int32 countFeaturedStickersHash() {
-	uint32 acc = 0;
-	auto &sets = Auth().data().stickerSets();
-	auto &featured = Auth().data().featuredStickerSetsOrder();
-	for_const (auto setId, featured) {
-		acc = (acc * 20261) + uint32(setId >> 32);
-		acc = (acc * 20261) + uint32(setId & 0xFFFFFFFF);
+	auto result = Api::HashInit();
+	const auto &sets = Auth().data().stickerSets();
+	const auto &featured = Auth().data().featuredStickerSetsOrder();
+	for (const auto setId : featured) {
+		Api::HashUpdate(result, setId);
 
 		auto it = sets.constFind(setId);
 		if (it != sets.cend() && (it->flags & MTPDstickerSet_ClientFlag::f_unread)) {
-			acc = (acc * 20261) + 1U;
+			Api::HashUpdate(result, 1);
 		}
 	}
-	return int32(acc & 0x7FFFFFFF);
+	return Api::HashFinalize(result);
 }
 
 int32 countSavedGifsHash() {
@@ -4161,50 +4235,70 @@ bool readBackground() {
 }
 
 Window::Theme::Saved readThemeUsingKey(FileKey key) {
+	using namespace Window::Theme;
+
 	FileReadDescriptor theme;
 	if (!readEncryptedFile(theme, key, FileOption::Safe, SettingsKey)) {
 		return {};
 	}
 
-	auto result = Window::Theme::Saved();
-	theme.stream >> result.content;
-	theme.stream >> result.pathRelative >> result.pathAbsolute;
+	auto tag = QString();
+	auto result = Saved();
+	auto &object = result.object;
+	auto &cache = result.cache;
+	theme.stream >> object.content;
+	theme.stream >> tag >> object.pathAbsolute;
+	if (tag == kThemeNewPathRelativeTag) {
+		auto creator = qint32();
+		theme.stream
+			>> object.pathRelative
+			>> object.cloud.id
+			>> object.cloud.accessHash
+			>> object.cloud.slug
+			>> object.cloud.title
+			>> object.cloud.documentId
+			>> creator;
+		object.cloud.createdBy = creator;
+	} else {
+		object.pathRelative = tag;
+	}
 	if (theme.stream.status() != QDataStream::Ok) {
 		return {};
 	}
 
-	QFile file(result.pathRelative);
-	if (result.pathRelative.isEmpty() || !file.exists()) {
-		file.setFileName(result.pathAbsolute);
-	}
-
-	auto changed = false;
-	if (!file.fileName().isEmpty()
-		&& file.exists()
-		&& file.open(QIODevice::ReadOnly)) {
-		if (file.size() > kThemeFileSizeLimit) {
-			LOG(("Error: theme file too large: %1 "
-				"(should be less than 5 MB, got %2)"
-				).arg(file.fileName()
-				).arg(file.size()));
-			return {};
+	auto ignoreCache = false;
+	if (!object.cloud.id) {
+		auto file = QFile(object.pathRelative);
+		if (object.pathRelative.isEmpty() || !file.exists()) {
+			file.setFileName(object.pathAbsolute);
 		}
-		auto fileContent = file.readAll();
-		file.close();
-		if (result.content != fileContent) {
-			result.content = fileContent;
-			changed = true;
+		if (!file.fileName().isEmpty()
+			&& file.exists()
+			&& file.open(QIODevice::ReadOnly)) {
+			if (file.size() > kThemeFileSizeLimit) {
+				LOG(("Error: theme file too large: %1 "
+					"(should be less than 5 MB, got %2)"
+					).arg(file.fileName()
+					).arg(file.size()));
+				return {};
+			}
+			auto fileContent = file.readAll();
+			file.close();
+			if (object.content != fileContent) {
+				object.content = fileContent;
+				ignoreCache = true;
+			}
 		}
 	}
-	if (!changed) {
+	if (!ignoreCache) {
 		quint32 backgroundIsTiled = 0;
 		theme.stream
-			>> result.cache.paletteChecksum
-			>> result.cache.contentChecksum
-			>> result.cache.colors
-			>> result.cache.background
+			>> cache.paletteChecksum
+			>> cache.contentChecksum
+			>> cache.colors
+			>> cache.background
 			>> backgroundIsTiled;
-		result.cache.tiled = (backgroundIsTiled == 1);
+		cache.tiled = (backgroundIsTiled == 1);
 		if (theme.stream.status() != QDataStream::Ok) {
 			return {};
 		}
@@ -4212,22 +4306,26 @@ Window::Theme::Saved readThemeUsingKey(FileKey key) {
 	return result;
 }
 
-QString loadThemeUsingKey(FileKey key) {
+std::optional<QString> InitialLoadThemeUsingKey(FileKey key) {
 	auto read = readThemeUsingKey(key);
-	const auto result = read.pathAbsolute;
-	return (!read.content.isEmpty() && Window::Theme::Load(std::move(read)))
-		? result
-		: QString();
+	const auto result = read.object.pathAbsolute;
+	if (read.object.content.isEmpty()
+		|| !Window::Theme::Initialize(std::move(read))) {
+		return std::nullopt;
+	}
+	return result;
 }
 
 void writeTheme(const Window::Theme::Saved &saved) {
+	using namespace Window::Theme;
+
 	if (_themeKeyLegacy) {
 		return;
 	}
-	auto &themeKey = Window::Theme::IsNightMode()
+	auto &themeKey = IsNightMode()
 		? _themeKeyNight
 		: _themeKeyDay;
-	if (saved.content.isEmpty()) {
+	if (saved.object.content.isEmpty()) {
 		if (themeKey) {
 			clearKey(themeKey);
 			themeKey = 0;
@@ -4241,14 +4339,38 @@ void writeTheme(const Window::Theme::Saved &saved) {
 		writeSettings();
 	}
 
-	auto backgroundTiled = static_cast<quint32>(saved.cache.tiled ? 1 : 0);
-	quint32 size = Serialize::bytearraySize(saved.content);
-	size += Serialize::stringSize(saved.pathRelative) + Serialize::stringSize(saved.pathAbsolute);
-	size += sizeof(int32) * 2 + Serialize::bytearraySize(saved.cache.colors) + Serialize::bytearraySize(saved.cache.background) + sizeof(quint32);
+	const auto &object = saved.object;
+	const auto &cache = saved.cache;
+	const auto tag = QString(kThemeNewPathRelativeTag);
+	quint32 size = Serialize::bytearraySize(object.content)
+		+ Serialize::stringSize(tag)
+		+ Serialize::stringSize(object.pathAbsolute)
+		+ Serialize::stringSize(object.pathRelative)
+		+ sizeof(uint64) * 3
+		+ Serialize::stringSize(object.cloud.slug)
+		+ Serialize::stringSize(object.cloud.title)
+		+ sizeof(qint32)
+		+ sizeof(qint32) * 2
+		+ Serialize::bytearraySize(cache.colors)
+		+ Serialize::bytearraySize(cache.background)
+		+ sizeof(quint32);
 	EncryptedDescriptor data(size);
-	data.stream << saved.content;
-	data.stream << saved.pathRelative << saved.pathAbsolute;
-	data.stream << saved.cache.paletteChecksum << saved.cache.contentChecksum << saved.cache.colors << saved.cache.background << backgroundTiled;
+	data.stream
+		<< object.content
+		<< tag
+		<< object.pathAbsolute
+		<< object.pathRelative
+		<< object.cloud.id
+		<< object.cloud.accessHash
+		<< object.cloud.slug
+		<< object.cloud.title
+		<< object.cloud.documentId
+		<< qint32(object.cloud.createdBy)
+		<< cache.paletteChecksum
+		<< cache.contentChecksum
+		<< cache.colors
+		<< cache.background
+		<< quint32(cache.tiled ? 1 : 0);
 
 	FileWriteDescriptor file(themeKey, FileOption::Safe);
 	file.writeEncrypted(data, SettingsKey);
@@ -4258,7 +4380,7 @@ void clearTheme() {
 	writeTheme(Window::Theme::Saved());
 }
 
-void loadTheme() {
+void InitialLoadTheme() {
 	const auto key = (_themeKeyLegacy != 0)
 		? _themeKeyLegacy
 		: (Window::Theme::IsNightMode()
@@ -4266,9 +4388,9 @@ void loadTheme() {
 			: _themeKeyDay);
 	if (!key) {
 		return;
-	} else if (const auto path = loadThemeUsingKey(key); !path.isEmpty()) {
+	} else if (const auto path = InitialLoadThemeUsingKey(key)) {
 		if (_themeKeyLegacy) {
-			Window::Theme::SetNightModeValue(path
+			Window::Theme::SetNightModeValue(*path
 				== Window::Theme::NightThemePath());
 			(Window::Theme::IsNightMode()
 				? _themeKeyNight
@@ -4277,6 +4399,20 @@ void loadTheme() {
 	} else {
 		clearTheme();
 	}
+}
+
+bool ApplyDefaultNightMode() {
+	const auto NightByDefault = Platform::IsMacStoreBuild();
+	if (!NightByDefault
+		|| Window::Theme::IsNightMode()
+		|| _themeKeyDay
+		|| _themeKeyNight
+		|| _themeKeyLegacy) {
+		return false;
+	}
+	Window::Theme::ToggleNightMode();
+	Window::Theme::KeepApplied();
+	return true;
 }
 
 Window::Theme::Saved readThemeAfterSwitch() {
@@ -4404,26 +4540,30 @@ std::vector<Lang::Language> readRecentLanguages() {
 	return result;
 }
 
-bool copyThemeColorsToPalette(const QString &path) {
-	auto &themeKey = Window::Theme::IsNightMode()
-		? _themeKeyNight
-		: _themeKeyDay;
+Window::Theme::Object ReadThemeContent() {
+	using namespace Window::Theme;
+
+	auto &themeKey = IsNightMode() ? _themeKeyNight : _themeKeyDay;
 	if (!themeKey) {
-		return false;
+		return Object();
 	}
 
 	FileReadDescriptor theme;
 	if (!readEncryptedFile(theme, themeKey, FileOption::Safe, SettingsKey)) {
-		return false;
+		return Object();
 	}
 
-	QByteArray themeContent;
-	theme.stream >> themeContent;
+	QByteArray content;
+	QString pathRelative, pathAbsolute;
+	theme.stream >> content >> pathRelative >> pathAbsolute;
 	if (theme.stream.status() != QDataStream::Ok) {
-		return false;
+		return Object();
 	}
 
-	return Window::Theme::CopyColorsToPalette(path, themeContent);
+	auto result = Object();
+	result.pathAbsolute = pathAbsolute;
+	result.content = content;
+	return result;
 }
 
 void writeRecentHashtagsAndBots() {
@@ -4529,7 +4669,7 @@ void readRecentHashtagsAndBots() {
 				if (!peer) {
 					return; // Broken data.
 				} else if (peer->isUser()
-					&& peer->asUser()->botInfo
+					&& peer->asUser()->isBot()
 					&& !peer->asUser()->botInfo->inlinePlaceholder.isEmpty()
 					&& !peer->asUser()->username.isEmpty()) {
 					bots.push_back(peer->asUser());
@@ -4982,7 +5122,7 @@ void ClearManager::onStart() {
 					if (!QDir(di.filePath()).removeRecursively()) result = false;
 				} else {
 					QString path = di.filePath();
-					if (!path.endsWith(qstr("map0")) && !path.endsWith(qstr("map1"))) {
+					if (!path.endsWith(qstr("map0")) && !path.endsWith(qstr("map1")) && !path.endsWith(qstr("maps"))) {
 						if (!QFile::remove(di.filePath())) result = false;
 					}
 				}
