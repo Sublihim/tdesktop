@@ -34,7 +34,7 @@ void queryDoNotDisturbState() {
 
 	auto userDefaults = [NSUserDefaults alloc];
 	if ([userDefaults respondsToSelector:@selector(initWithSuiteName:)]) {
-		id userDefaultsValue = [[[NSUserDefaults alloc] initWithSuiteName:@"com.apple.notificationcenterui_test"] objectForKey:@"doNotDisturb"];
+		id userDefaultsValue = [[[NSUserDefaults alloc] initWithSuiteName:@"com.apple.notificationcenterui"] objectForKey:@"doNotDisturb"];
 		DoNotDisturbEnabled = ([userDefaultsValue boolValue] == YES);
 	} else {
 		DoNotDisturbEnabled = false;
@@ -143,6 +143,10 @@ bool SkipToast() {
 	return DoNotDisturbEnabled;
 }
 
+bool SkipFlashBounce() {
+	return SkipAudio();
+}
+
 bool Supported() {
 	return Platform::IsMac10_8OrGreater();
 }
@@ -152,10 +156,6 @@ std::unique_ptr<Window::Notifications::Manager> Create(Window::Notifications::Sy
 		return std::make_unique<Manager>(system);
 	}
 	return nullptr;
-}
-
-void FlashBounce() {
-	[NSApp requestUserAttention:NSInformationalRequest];
 }
 
 class Manager::Private : public QObject, private base::Subscriber {

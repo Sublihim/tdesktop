@@ -35,7 +35,7 @@ Go to ***BuildPath*** and run
 
     git clone https://github.com/desktop-app/patches.git
     cd patches
-    git checkout 395b620
+    git checkout b08b497
     cd ../
     git clone https://chromium.googlesource.com/external/gyp
     git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
@@ -52,9 +52,8 @@ Go to ***BuildPath*** and run
 
     git clone https://github.com/desktop-app/patches.git
     cd patches
-    git checkout 395b620
+    git checkout b08b497
     cd ../
-    git clone --branch 0.10.0 https://github.com/ericniebler/range-v3
 
     cd xz-5.0.5
     CFLAGS="-mmacosx-version-min=10.10" LDFLAGS="-mmacosx-version-min=10.10" ./configure
@@ -236,8 +235,7 @@ Go to ***BuildPath*** and run
     cd qt5_6_2
     perl init-repository --module-subset=qtbase,qtimageformats
     git checkout v5.6.2
-    git submodule update qtbase
-    git submodule update qtimageformats
+    git submodule update qtbase qtimageformats
     cd qtbase
     git apply ../../patches/qtbase_5_6_2.diff
     cd ..

@@ -14,6 +14,7 @@ namespace Media {
 namespace Streaming {
 namespace {
 
+constexpr auto kMaxFrameArea = 3840 * 2160; // usual 4K
 constexpr auto kDisplaySkipped = crl::time(-1);
 constexpr auto kFinishedPosition = std::numeric_limits<crl::time>::max();
 static_assert(kDisplaySkipped != kTimeUnknown);
@@ -36,8 +37,8 @@ public:
 
 	void process(std::vector<FFmpeg::Packet> &&packets);
 
-	[[nodisacrd]] rpl::producer<> checkNextFrame() const;
-	[[nodisacrd]] rpl::producer<> waitingForData() const;
+	[[nodiscard]] rpl::producer<> checkNextFrame() const;
+	[[nodiscard]] rpl::producer<> waitingForData() const;
 
 	void pause(crl::time time);
 	void resume(crl::time time);
@@ -511,6 +512,9 @@ bool VideoTrackObject::tryReadFirstFrame(FFmpeg::Packet &&packet) {
 }
 
 bool VideoTrackObject::processFirstFrame() {
+	if (_stream.frame->width * _stream.frame->height > kMaxFrameArea) {
+		return false;
+	}
 	auto frame = ConvertFrame(
 		_stream,
 		_stream.frame.get(),

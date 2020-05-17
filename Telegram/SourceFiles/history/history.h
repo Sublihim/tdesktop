@@ -31,6 +31,7 @@ namespace Data {
 struct Draft;
 class Session;
 class Folder;
+class ChatFilter;
 } // namespace Data
 
 namespace Dialogs {
@@ -201,6 +202,8 @@ public:
 	void setUnreadCount(int newUnreadCount);
 	void setUnreadMark(bool unread);
 	[[nodiscard]] bool unreadMark() const;
+	void setFakeUnreadWhileOpened(bool enabled);
+	[[nodiscard]] bool fakeUnreadWhileOpened() const;
 	[[nodiscard]] int unreadCountForBadge() const; // unreadCount || unreadMark ? 1 : 0.
 	[[nodiscard]] bool mute() const;
 	bool changeMute(bool newMute);
@@ -233,6 +236,15 @@ public:
 		MsgId maxInboxRead,
 		MsgId maxOutboxRead);
 	void dialogEntryApplied();
+
+	void cacheTopPromotion(
+		bool promoted,
+		const QString &type,
+		const QString &message);
+	[[nodiscard]] QStringRef topPromotionType() const;
+	[[nodiscard]] QString topPromotionMessage() const;
+	[[nodiscard]] bool topPromotionAboutShown() const;
+	void markTopPromotionAboutShown();
 
 	MsgId minMsgId() const;
 	MsgId maxMsgId() const;
@@ -327,11 +339,10 @@ public:
 	void setForwardDraft(MessageIdsList &&items);
 
 	History *migrateSibling() const;
-	bool useProxyPromotion() const;
+	[[nodiscard]] bool useTopPromotion() const;
 	int fixedOnTopIndex() const override;
 	void updateChatListExistence() override;
 	bool shouldBeInChatList() const override;
-	bool toImportant() const override;
 	int chatListUnreadCount() const override;
 	bool chatListUnreadMark() const override;
 	bool chatListMutedBadge() const override;
@@ -540,6 +551,7 @@ private:
 	std::optional<HistoryItem*> _chatListMessage;
 
 	bool _unreadMark = false;
+	bool _fakeUnreadWhileOpened = false;
 
 	// A pointer to the block that is currently being built.
 	// We hold this pointer so we can destroy it while building
@@ -555,6 +567,9 @@ private:
 	std::optional<QString> _lastSentDraftText;
 	TimeId _lastSentDraftTime = 0;
 	MessageIdsList _forwardDraft;
+
+	QString _topPromotedMessage;
+	QString _topPromotedType;
 
 	base::flat_map<not_null<UserData*>, crl::time> _typing;
 	base::flat_map<not_null<UserData*>, SendAction> _sendActions;

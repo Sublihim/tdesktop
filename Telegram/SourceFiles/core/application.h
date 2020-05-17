@@ -128,7 +128,7 @@ public:
 	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
 
 	// Dc options and proxy.
-	MTP::DcOptions *dcOptions() {
+	not_null<MTP::DcOptions*> dcOptions() {
 		return _dcOptions.get();
 	}
 	struct ProxyChange {
@@ -214,8 +214,8 @@ public:
 	void handleAppDeactivated();
 
 	void switchDebugMode();
-	void switchWorkMode();
 	void switchTestMode();
+	void switchFreeType();
 	void writeInstallBetaVersionsSetting();
 
 	void call_handleUnreadCounterUpdate();

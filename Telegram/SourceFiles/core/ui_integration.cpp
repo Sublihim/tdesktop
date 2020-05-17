@@ -52,12 +52,25 @@ void UiIntegration::activationFromTopPanel() {
 	Platform::IgnoreApplicationActivationRightNow();
 }
 
+void UiIntegration::startFontsBegin() {
+	Platform::FallbackFontConfigCheckBegin();
+}
+
+void UiIntegration::startFontsEnd() {
+	Platform::FallbackFontConfigCheckEnd();
+}
+
 std::shared_ptr<ClickHandler> UiIntegration::createLinkHandler(
 		EntityType type,
 		const QString &text,
 		const QString &data,
 		const TextParseOptions &options) {
 	switch (type) {
+	case EntityType::Url:
+		return (!data.isEmpty() && UrlClickHandler::IsSuspicious(data))
+			? std::make_shared<HiddenUrlClickHandler>(data)
+			: nullptr;
+
 	case EntityType::CustomUrl:
 		return !data.isEmpty()
 			? std::make_shared<HiddenUrlClickHandler>(data)
@@ -130,7 +143,9 @@ bool UiIntegration::handleUrlClick(
 		Core::App().openInternalUrl(local, context);
 		return true;
 	}
-	return false;
+
+	File::OpenUrl(url);
+	return true;
 
 }
 

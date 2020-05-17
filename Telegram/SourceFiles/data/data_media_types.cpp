@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_web_page.h"
 #include "history/view/media/history_view_poll.h"
 #include "history/view/media/history_view_theme_document.h"
+#include "history/view/media/history_view_dice.h"
 #include "ui/image/image.h"
 #include "ui/image/image_source.h"
 #include "ui/text_options.h"
@@ -45,7 +46,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Data {
 namespace {
 
-Call ComputeCallData(const MTPDmessageActionPhoneCall &call) {
+constexpr auto kFastRevokeRestriction = 24 * 60 * TimeId(60);
+
+[[nodiscard]] Call ComputeCallData(const MTPDmessageActionPhoneCall &call) {
 	auto result = Call();
 	result.finishReason = [&] {
 		if (const auto reason = call.vreason()) {
@@ -67,7 +70,7 @@ Call ComputeCallData(const MTPDmessageActionPhoneCall &call) {
 	return result;
 }
 
-Invoice ComputeInvoiceData(
+[[nodiscard]] Invoice ComputeInvoiceData(
 		not_null<HistoryItem*> item,
 		const MTPDmessageMediaInvoice &data) {
 	auto result = Invoice();
@@ -83,7 +86,7 @@ Invoice ComputeInvoiceData(
 	return result;
 }
 
-QString WithCaptionDialogsText(
+[[nodiscard]] QString WithCaptionDialogsText(
 		const QString &attachType,
 		const QString &caption) {
 	if (caption.isEmpty()) {
@@ -101,7 +104,7 @@ QString WithCaptionDialogsText(
 		TextUtilities::Clean(caption));
 }
 
-QString WithCaptionNotificationText(
+[[nodiscard]] QString WithCaptionNotificationText(
 		const QString &attachType,
 		const QString &caption) {
 	if (caption.isEmpty()) {
@@ -219,7 +222,7 @@ bool Media::allowsEditMedia() const {
 	return false;
 }
 
-bool Media::allowsRevoke() const {
+bool Media::allowsRevoke(TimeId now) const {
 	return true;
 }
 
@@ -1323,6 +1326,65 @@ std::unique_ptr<HistoryView::Media> MediaPoll::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent) {
 	return std::make_unique<HistoryView::Poll>(message, _poll);
+}
+
+MediaDice::MediaDice(not_null<HistoryItem*> parent, QString emoji, int value)
+: Media(parent)
+, _emoji(emoji)
+, _value(value) {
+}
+
+std::unique_ptr<Media> MediaDice::clone(not_null<HistoryItem*> parent) {
+	return std::make_unique<MediaDice>(parent, _emoji, _value);
+}
+
+QString MediaDice::emoji() const {
+	return _emoji;
+}
+
+int MediaDice::value() const {
+	return _value;
+}
+
+bool MediaDice::allowsRevoke(TimeId now) const {
+	const auto peer = parent()->history()->peer;
+	if (peer->isSelf() || !peer->isUser()) {
+		return true;
+	}
+	return (now >= parent()->date() + kFastRevokeRestriction);
+}
+
+QString MediaDice::notificationText() const {
+	return _emoji;
+}
+
+QString MediaDice::pinnedTextSubstring() const {
+	return QChar(171) + notificationText() + QChar(187);
+}
+
+TextForMimeData MediaDice::clipboardText() const {
+	return { notificationText() };
+}
+
+bool MediaDice::updateInlineResultMedia(const MTPMessageMedia &media) {
+	return updateSentMedia(media);
+}
+
+bool MediaDice::updateSentMedia(const MTPMessageMedia &media) {
+	if (media.type() != mtpc_messageMediaDice) {
+		return false;
+	}
+	_value = media.c_messageMediaDice().vvalue().v;
+	parent()->history()->owner().requestItemRepaint(parent());
+	return true;
+}
+
+std::unique_ptr<HistoryView::Media> MediaDice::createView(
+		not_null<HistoryView::Element*> message,
+		not_null<HistoryItem*> realParent) {
+	return std::make_unique<HistoryView::UnwrappedMedia>(
+		message,
+		std::make_unique<HistoryView::Dice>(message, this));
 }
 
 } // namespace Data

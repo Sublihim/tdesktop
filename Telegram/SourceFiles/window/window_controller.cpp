@@ -9,8 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/application.h"
 #include "main/main_account.h"
+#include "main/main_session.h"
 #include "ui/layers/box_content.h"
 #include "ui/layers/layer_widget.h"
+#include "ui/toast/toast.h"
+#include "ui/emoji_config.h"
+#include "chat_helpers/emoji_sets_manager.h"
 #include "window/window_session_controller.h"
 #include "window/themes/window_theme.h"
 #include "window/themes/window_theme_editor.h"
@@ -27,10 +31,21 @@ Controller::Controller(not_null<Main::Account*> account)
 : _account(account)
 , _widget(this) {
 	_account->sessionValue(
-	) | rpl::start_with_next([=](Main::Session *session) {
+		) | rpl::start_with_next([=](Main::Session *session) {
 		_sessionController = session
 			? std::make_unique<SessionController>(session, this)
 			: nullptr;
+		if (_sessionController) {
+			_sessionController->filtersMenuChanged(
+			) | rpl::start_with_next([=] {
+				sideBarChanged();
+			}, session->lifetime());
+		}
+		if (_sessionController && Global::DialogsFiltersEnabled()) {
+			_sessionController->toggleFiltersMenu(true);
+		} else {
+			sideBarChanged();
+		}
 		_widget.updateWindowIcon();
 	}, _lifetime);
 
@@ -69,10 +84,18 @@ void Controller::setupIntro() {
 
 void Controller::setupMain() {
 	_widget.setupMain();
+
+	if (const auto id = Ui::Emoji::NeedToSwitchBackToId()) {
+		Ui::Emoji::LoadAndSwitchTo(id);
+	}
 }
 
 void Controller::showSettings() {
 	_widget.showSettings();
+}
+
+void Controller::showToast(const QString &text) {
+	Ui::Toast::Show(_widget.bodyWidget(), text);
 }
 
 void Controller::showBox(
@@ -84,6 +107,12 @@ void Controller::showBox(
 
 void Controller::showRightColumn(object_ptr<TWidget> widget) {
 	_widget.showRightColumn(std::move(widget));
+}
+
+void Controller::sideBarChanged() {
+	_widget.setMinimumWidth(_widget.computeMinWidth());
+	_widget.updateControlsGeometry();
+	_widget.fixOrder();
 }
 
 void Controller::activate() {

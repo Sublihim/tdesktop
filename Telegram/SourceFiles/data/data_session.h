@@ -58,6 +58,7 @@ class Folder;
 class LocationPoint;
 class WallPaper;
 class ScheduledMessages;
+class ChatFilters;
 class CloudThemes;
 class Streaming;
 class MediaRotation;
@@ -84,6 +85,9 @@ public:
 	}
 	[[nodiscard]] const Groups &groups() const {
 		return _groups;
+	}
+	[[nodiscard]] ChatFilters &chatsFilters() const {
+		return *_chatsFilters;
 	}
 	[[nodiscard]] ScheduledMessages &scheduledMessages() const {
 		return *_scheduledMessages;
@@ -358,16 +362,21 @@ public:
 		const QVector<MTPDialog> &dialogs,
 		std::optional<int> count = std::nullopt);
 
-	int pinnedChatsCount(Data::Folder *folder) const;
-	int pinnedChatsLimit(Data::Folder *folder) const;
+	int pinnedChatsCount(Data::Folder *folder, FilterId filterId) const;
+	int pinnedChatsLimit(Data::Folder *folder, FilterId filterId) const;
 	const std::vector<Dialogs::Key> &pinnedChatsOrder(
-		Data::Folder *folder) const;
-	void setChatPinned(const Dialogs::Key &key, bool pinned);
+		Data::Folder *folder,
+		FilterId filterId) const;
+	void setChatPinned(
+		const Dialogs::Key &key,
+		FilterId filterId,
+		bool pinned);
 	void clearPinnedChats(Data::Folder *folder);
 	void applyPinnedChats(
 		Data::Folder *folder,
 		const QVector<MTPDialogPeer> &list);
 	void reorderTwoPinnedChats(
+		FilterId filterId,
 		const Dialogs::Key &key1,
 		const Dialogs::Key &key2);
 
@@ -444,11 +453,6 @@ public:
 	int unreadBadgeIgnoreOne(const Dialogs::Key &key) const;
 	bool unreadBadgeMutedIgnoreOne(const Dialogs::Key &key) const;
 	int unreadOnlyMutedBadge() const;
-
-	void unreadStateChanged(
-		const Dialogs::Key &key,
-		const Dialogs::UnreadState &wasState);
-	void unreadEntryChanged(const Dialogs::Key &key, bool added);
 
 	void selfDestructIn(not_null<HistoryItem*> item, crl::time delay);
 
@@ -621,19 +625,20 @@ public:
 	//FeedId defaultFeedId() const;
 	//rpl::producer<FeedId> defaultFeedIdValue() const;
 
-	not_null<Dialogs::MainList*> chatsList(Data::Folder *folder = nullptr);
-	not_null<const Dialogs::MainList*> chatsList(
+	[[nodiscard]] not_null<Dialogs::MainList*> chatsList(
+		Data::Folder *folder = nullptr);
+	[[nodiscard]] not_null<const Dialogs::MainList*> chatsList(
 		Data::Folder *folder = nullptr) const;
-	not_null<Dialogs::IndexedList*> contactsList();
-	not_null<Dialogs::IndexedList*> contactsNoChatsList();
+	[[nodiscard]] not_null<Dialogs::IndexedList*> contactsList();
+	[[nodiscard]] not_null<Dialogs::IndexedList*> contactsNoChatsList();
 
 	struct RefreshChatListEntryResult {
 		bool changed = false;
-		bool importantChanged = false;
 		Dialogs::PositionChange moved;
-		Dialogs::PositionChange importantMoved;
 	};
-	RefreshChatListEntryResult refreshChatListEntry(Dialogs::Key key);
+	RefreshChatListEntryResult refreshChatListEntry(
+		Dialogs::Key key,
+		FilterId filterIdForResult);
 	void removeChatListEntry(Dialogs::Key key);
 
 	struct DialogsRowReplacement {
@@ -673,8 +678,11 @@ public:
 	void setMimeForwardIds(MessageIdsList &&list);
 	MessageIdsList takeMimeForwardIds();
 
-	void setProxyPromoted(PeerData *promoted);
-	PeerData *proxyPromoted() const;
+	void setTopPromoted(
+		PeerData *promoted,
+		const QString &type,
+		const QString &message);
+	PeerData *topPromoted() const;
 
 	bool updateWallpapers(const MTPaccount_WallPapers &data);
 	void removeWallpaper(const WallPaper &paper);
@@ -817,6 +825,8 @@ private:
 
 	void setWallpapers(const QVector<MTPWallPaper> &data, int32 hash);
 
+	void checkPollsClosings();
+
 	not_null<Main::Session*> _session;
 
 	Storage::DatabasePointer _cache;
@@ -938,6 +948,9 @@ private:
 	base::flat_set<not_null<GameData*>> _gamesUpdated;
 	base::flat_set<not_null<PollData*>> _pollsUpdated;
 
+	base::flat_multi_map<TimeId, not_null<PollData*>> _pollsClosings;
+	base::Timer _pollsClosingTimer;
+
 	base::flat_map<FolderId, std::unique_ptr<Folder>> _folders;
 	//rpl::variable<FeedId> _defaultFeedId = FeedId(); // #feed
 
@@ -947,7 +960,7 @@ private:
 
 	base::flat_set<not_null<ViewElement*>> _heavyViewParts;
 
-	PeerData *_proxyPromoted = nullptr;
+	PeerData *_topPromoted = nullptr;
 
 	NotifySettings _defaultUserNotifySettings;
 	NotifySettings _defaultChatNotifySettings;
@@ -975,6 +988,7 @@ private:
 	int32 _wallpapersHash = 0;
 
 	Groups _groups;
+	std::unique_ptr<ChatFilters> _chatsFilters;
 	std::unique_ptr<ScheduledMessages> _scheduledMessages;
 	std::unique_ptr<CloudThemes> _cloudThemes;
 	std::unique_ptr<Streaming> _streaming;

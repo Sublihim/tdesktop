@@ -702,6 +702,7 @@ bool MainWindow::takeThirdSectionFromLayer() {
 }
 
 void MainWindow::fixOrder() {
+	if (_passcodeLock) _passcodeLock->raise();
 	if (_layer) _layer->raise();
 	if (_mediaPreview) _mediaPreview->raise();
 	if (_testingThemeWarning) _testingThemeWarning->raise();
@@ -756,13 +757,20 @@ void MainWindow::toggleDisplayNotifyFromTray() {
 		return;
 	}
 
-	bool soundNotifyChanged = false;
+	auto soundNotifyChanged = false;
+	auto flashBounceNotifyChanged = false;
 	Global::SetDesktopNotify(!Global::DesktopNotify());
 	if (Global::DesktopNotify()) {
 		if (Global::RestoreSoundNotifyFromTray() && !Global::SoundNotify()) {
 			Global::SetSoundNotify(true);
 			Global::SetRestoreSoundNotifyFromTray(false);
 			soundNotifyChanged = true;
+		}
+		if (Global::RestoreFlashBounceNotifyFromTray()
+			&& !Global::FlashBounceNotify()) {
+			Global::SetFlashBounceNotify(true);
+			Global::SetRestoreFlashBounceNotifyFromTray(false);
+			flashBounceNotifyChanged = true;
 		}
 	} else {
 		if (Global::SoundNotify()) {
@@ -772,13 +780,23 @@ void MainWindow::toggleDisplayNotifyFromTray() {
 		} else {
 			Global::SetRestoreSoundNotifyFromTray(false);
 		}
+		if (Global::FlashBounceNotify()) {
+			Global::SetFlashBounceNotify(false);
+			Global::SetRestoreFlashBounceNotifyFromTray(true);
+			flashBounceNotifyChanged = true;
+		} else {
+			Global::SetRestoreFlashBounceNotifyFromTray(false);
+		}
 	}
 	Local::writeUserSettings();
-	account().session().notifications().settingsChanged().notify(
-		Window::Notifications::ChangeType::DesktopEnabled);
+	using Change = Window::Notifications::ChangeType;
+	auto &changes = account().session().notifications().settingsChanged();
+	changes.notify(Change::DesktopEnabled);
 	if (soundNotifyChanged) {
-		account().session().notifications().settingsChanged().notify(
-			Window::Notifications::ChangeType::SoundEnabled);
+		changes.notify(Change::SoundEnabled);
+	}
+	if (flashBounceNotifyChanged) {
+		changes.notify(Change::FlashBounceEnabled);
 	}
 }
 
@@ -799,7 +817,21 @@ void MainWindow::updateControlsGeometry() {
 
 	auto body = bodyWidget()->rect();
 	if (_passcodeLock) _passcodeLock->setGeometry(body);
-	if (_main) _main->setGeometry(body);
+	auto mainLeft = 0;
+	auto mainWidth = body.width();
+	if (const auto session = sessionController()) {
+		if (const auto skip = session->filtersWidth()) {
+			mainLeft += skip;
+			mainWidth -= skip;
+		}
+	}
+	if (_main) {
+		_main->setGeometry({
+			body.x() + mainLeft,
+			body.y(),
+			mainWidth,
+			body.height() });
+	}
 	if (_intro) _intro->setGeometry(body);
 	if (_layer) _layer->setGeometry(body);
 	if (_mediaPreview) _mediaPreview->setGeometry(body);

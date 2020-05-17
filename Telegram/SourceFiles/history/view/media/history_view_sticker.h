@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_media_unwrapped.h"
 #include "base/weak_ptr.h"
 
+namespace Main {
+class Session;
+} // namespace Main
+
 namespace Data {
 struct FileOrigin;
 } // namespace Data
@@ -31,6 +35,7 @@ public:
 		const Lottie::ColorReplacements *replacements = nullptr);
 	~Sticker();
 
+	void initSize();
 	QSize size() override;
 	void draw(Painter &p, const QRect &r, bool selected) override;
 	ClickHandlerPtr link() override {
@@ -48,6 +53,18 @@ public:
 	}
 	void refreshLink() override;
 
+	void setDiceIndex(const QString &emoji, int index);
+	[[nodiscard]] bool atTheEnd() const {
+		return _atTheEnd;
+	}
+	[[nodiscard]] bool readyToDrawLottie();
+
+	[[nodiscard]] static QSize GetAnimatedEmojiSize(
+		not_null<Main::Session*> session);
+	[[nodiscard]] static QSize GetAnimatedEmojiSize(
+		not_null<Main::Session*> session,
+		QSize documentSize);
+
 private:
 	[[nodiscard]] bool isEmojiSticker() const;
 	void paintLottie(Painter &p, const QRect &r, bool selected);
@@ -63,7 +80,12 @@ private:
 	std::unique_ptr<Lottie::SinglePlayer> _lottie;
 	ClickHandlerPtr _link;
 	QSize _size;
+	QImage _lastDiceFrame;
+	QString _diceEmoji;
+	int _diceIndex = -1;
 	mutable bool _lottieOncePlayed = false;
+	mutable bool _atTheEnd = false;
+	mutable bool _nextLastDiceFrame = false;
 
 	rpl::lifetime _lifetime;
 

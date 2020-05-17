@@ -40,11 +40,17 @@ namespace {
 
 constexpr auto kMaxGifForwardedBarLines = 4;
 constexpr auto kUseNonBlurredThreshold = 240;
+constexpr auto kMaxInlineArea = 1920 * 1080;
 
 int gifMaxStatusWidth(DocumentData *document) {
 	auto result = st::normalFont->width(formatDownloadText(document->size, document->size));
 	accumulate_max(result, st::normalFont->width(formatGifAndSizeText(document->size)));
 	return result;
+}
+
+[[nodiscard]] bool CanPlayInline(not_null<DocumentData*> document) {
+	const auto dimensions = document->dimensions;
+	return dimensions.width() * dimensions.height() <= kMaxInlineArea;
 }
 
 } // namespace
@@ -262,7 +268,9 @@ void Gif::draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms
 	const auto autoPaused = App::wnd()->sessionController()->isGifPausedAtLeastFor(Window::GifPauseReason::Any);
 	const auto cornerDownload = downloadInCorner();
 	const auto canBePlayed = _data->canBePlayed();
-	const auto autoplay = autoplayEnabled() && canBePlayed;
+	const auto autoplay = autoplayEnabled()
+		&& canBePlayed
+		&& CanPlayInline(_data);
 	const auto activeRoundPlaying = activeRoundStreamed();
 	const auto startPlay = autoplay
 		&& !_streamed
@@ -866,7 +874,10 @@ void Gif::drawGrouped(
 	const auto fullFeatured = fullFeaturedGrouped(sides);
 	const auto cornerDownload = fullFeatured && downloadInCorner();
 	const auto canBePlayed = _data->canBePlayed();
-	const auto autoplay = fullFeatured && autoplayEnabled() && canBePlayed;
+	const auto autoplay = fullFeatured
+		&& autoplayEnabled()
+		&& canBePlayed
+		&& CanPlayInline(_data);
 	const auto startPlay = autoplay && !_streamed;
 	if (startPlay) {
 		const_cast<Gif*>(this)->playAnimation(true);
@@ -1130,7 +1141,7 @@ void Gif::validateGroupedCache(
 	const auto height = geometry.height();
 	const auto options = Option::Smooth
 		| Option::RoundedLarge
-		| (blur ? Option(0) : Option::Blurred)
+		| (blur ? Option::Blurred : Option(0))
 		| ((corners & RectPart::TopLeft) ? Option::RoundedTopLeft : Option::None)
 		| ((corners & RectPart::TopRight) ? Option::RoundedTopRight : Option::None)
 		| ((corners & RectPart::BottomLeft) ? Option::RoundedBottomLeft : Option::None)
@@ -1404,7 +1415,13 @@ void Gif::repaintStreamedContent() {
 }
 
 void Gif::streamingReady(::Media::Streaming::Information &&info) {
-	history()->owner().requestViewResize(_parent);
+	if (info.video.size.width() * info.video.size.height()
+		> kMaxInlineArea) {
+		_data->dimensions = info.video.size;
+		stopAnimation();
+	} else {
+		history()->owner().requestViewResize(_parent);
+	}
 }
 
 void Gif::stopAnimation() {
@@ -1445,7 +1462,8 @@ bool Gif::needInfoDisplay() const {
 	return _parent->data()->isSending()
 		|| _data->uploading()
 		|| _parent->isUnderCursor()
-		|| _parent->isLastAndSelfMessage();
+		// Don't show the GIF badge if this message has text.
+		|| (!_parent->hasBubble() && _parent->isLastAndSelfMessage());
 }
 
 bool Gif::needCornerStatusDisplay() const {

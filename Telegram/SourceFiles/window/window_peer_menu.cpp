@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "observer_peer.h"
 #include "api/api_common.h"
+#include "api/api_chat_filters.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_message.h" // GetErrorTextForSending.
@@ -45,12 +46,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_user.h"
 #include "data/data_scheduled_messages.h"
 #include "data/data_histories.h"
+#include "data/data_chat_filters.h"
 #include "dialogs/dialogs_key.h"
 #include "boxes/peers/edit_peer_info_box.h"
 #include "facades.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_window.h" // st::windowMinWidth
+#include "styles/style_history.h" // st::historyErrorToast
 
 #include <QtWidgets/QAction>
 
@@ -64,14 +67,17 @@ public:
 	Filler(
 		not_null<SessionController*> controller,
 		not_null<PeerData*> peer,
+		FilterId filterId,
 		const PeerMenuCallback &addAction,
 		PeerMenuSource source);
 	void fill();
 
 private:
-	bool showInfo();
-	bool showToggleArchived();
-	bool showTogglePin();
+	[[nodiscard]] bool showInfo();
+	[[nodiscard]] bool showHidePromotion();
+	[[nodiscard]] bool showToggleArchived();
+	[[nodiscard]] bool showTogglePin();
+	void addHidePromotion();
 	void addTogglePin();
 	void addInfo();
 	//void addSearch();
@@ -84,6 +90,7 @@ private:
 
 	not_null<SessionController*> _controller;
 	not_null<PeerData*> _peer;
+	FilterId _filterId = 0;
 	const PeerMenuCallback &_addAction;
 	PeerMenuSource _source;
 
@@ -115,7 +122,7 @@ private:
 };
 
 History *FindWastedPin(not_null<Data::Session*> data, Data::Folder *folder) {
-	const auto &order = data->pinnedChatsOrder(folder);
+	const auto &order = data->pinnedChatsOrder(folder, FilterId());
 	for (const auto &pinned : order) {
 		if (const auto history = pinned.history()) {
 			if (history->peer->isChat()
@@ -134,27 +141,30 @@ void AddChatMembers(
 	AddParticipantsBoxController::Start(navigation, chat);
 }
 
-bool PinnedLimitReached(Dialogs::Key key) {
+bool PinnedLimitReached(Dialogs::Key key, FilterId filterId) {
 	Expects(key.entry()->folderKnown());
 
 	const auto entry = key.entry();
 	const auto owner = &entry->owner();
 	const auto folder = entry->folder();
-	const auto pinnedCount = owner->pinnedChatsCount(folder);
-	const auto pinnedMax = owner->pinnedChatsLimit(folder);
+	const auto pinnedCount = owner->pinnedChatsCount(folder, filterId);
+	const auto pinnedMax = owner->pinnedChatsLimit(folder, filterId);
 	if (pinnedCount < pinnedMax) {
 		return false;
 	}
 	// Some old chat, that was converted, maybe is still pinned.
-	if (const auto wasted = FindWastedPin(owner, folder)) {
-		owner->setChatPinned(wasted, false);
-		owner->setChatPinned(key, true);
+	const auto wasted = filterId ? nullptr : FindWastedPin(owner, folder);
+	if (wasted) {
+		owner->setChatPinned(wasted, FilterId(), false);
+		owner->setChatPinned(key, FilterId(), true);
 		entry->session().api().savePinnedOrder(folder);
 	} else {
-		auto errorText = tr::lng_error_pinned_max(
-			tr::now,
-			lt_count,
-			pinnedMax);
+		const auto errorText = filterId
+			? tr::lng_filters_error_pinned_max(tr::now)
+			: tr::lng_error_pinned_max(
+				tr::now,
+				lt_count,
+				pinnedMax);
 		Ui::show(Box<InformBox>(errorText));
 	}
 	return true;
@@ -165,12 +175,12 @@ void TogglePinnedDialog(Dialogs::Key key) {
 		return;
 	}
 	const auto owner = &key.entry()->owner();
-	const auto isPinned = !key.entry()->isPinnedDialog();
-	if (isPinned && PinnedLimitReached(key)) {
+	const auto isPinned = !key.entry()->isPinnedDialog(0);
+	if (isPinned && PinnedLimitReached(key, 0)) {
 		return;
 	}
 
-	owner->setChatPinned(key, isPinned);
+	owner->setChatPinned(key, FilterId(), isPinned);
 	const auto flags = isPinned
 		? MTPmessages_ToggleDialogPin::Flag::f_pinned
 		: MTPmessages_ToggleDialogPin::Flag(0);
@@ -194,13 +204,44 @@ void TogglePinnedDialog(Dialogs::Key key) {
 	}
 }
 
+void TogglePinnedDialog(Dialogs::Key key, FilterId filterId) {
+	if (!filterId) {
+		return TogglePinnedDialog(key);
+	}
+	const auto owner = &key.entry()->owner();
+
+	// This can happen when you remove this filter from another client.
+	if (!ranges::contains(
+		(&owner->session())->data().chatsFilters().list(),
+		filterId,
+		&Data::ChatFilter::id)) {
+		Ui::Toast::Show(tr::lng_cant_do_this(tr::now));
+		return;
+	}
+
+	const auto isPinned = !key.entry()->isPinnedDialog(filterId);
+	if (isPinned && PinnedLimitReached(key, filterId)) {
+		return;
+	}
+
+	owner->setChatPinned(key, filterId, isPinned);
+	Api::SaveNewFilterPinned(&owner->session(), filterId);
+	if (isPinned) {
+		if (const auto main = App::main()) {
+			main->dialogsToUp();
+		}
+	}
+}
+
 Filler::Filler(
 	not_null<SessionController*> controller,
 	not_null<PeerData*> peer,
+	FilterId filterId,
 	const PeerMenuCallback &addAction,
 	PeerMenuSource source)
 : _controller(controller)
 , _peer(peer)
+, _filterId(filterId)
 , _addAction(addAction)
 , _source(source) {
 }
@@ -220,12 +261,22 @@ bool Filler::showInfo() {
 	return false;
 }
 
+bool Filler::showHidePromotion() {
+	if (_source != PeerMenuSource::ChatsList) {
+		return false;
+	}
+	const auto history = _peer->owner().historyLoaded(_peer);
+	return history
+		&& history->useTopPromotion()
+		&& !history->topPromotionType().isEmpty();
+}
+
 bool Filler::showToggleArchived() {
 	if (_source != PeerMenuSource::ChatsList) {
 		return false;
 	}
 	const auto history = _peer->owner().historyLoaded(_peer);
-	if (history && history->useProxyPromotion()) {
+	if (history && history->useTopPromotion()) {
 		return false;
 	} else if (!_peer->isNotificationsUser() && !_peer->isSelf()) {
 		return true;
@@ -241,28 +292,40 @@ bool Filler::showTogglePin() {
 	return history && !history->fixedOnTopIndex();
 }
 
+void Filler::addHidePromotion() {
+	const auto history = _peer->owner().history(_peer);
+	_addAction(tr::lng_context_hide_psa(tr::now), [=] {
+		history->cacheTopPromotion(false, QString(), QString());
+		history->session().api().request(MTPhelp_HidePromoData(
+			history->peer->input
+		)).send();
+	});
+}
+
 void Filler::addTogglePin() {
-	auto peer = _peer;
+	const auto filterId = _filterId;
+	const auto peer = _peer;
 	auto isPinned = false;
-	if (auto history = peer->owner().historyLoaded(peer)) {
-		isPinned = history->isPinnedDialog();
+	if (const auto history = peer->owner().historyLoaded(peer)) {
+		isPinned = history->isPinnedDialog(filterId);
 	}
-	auto pinText = [](bool isPinned) {
+	const auto pinText = [](bool isPinned) {
 		return isPinned
 			? tr::lng_context_unpin_from_top(tr::now)
 			: tr::lng_context_pin_to_top(tr::now);
 	};
-	auto pinToggle = [=] {
-		TogglePinnedDialog(peer->owner().history(peer));
+	const auto pinToggle = [=] {
+		TogglePinnedDialog(peer->owner().history(peer), filterId);
 	};
-	auto pinAction = _addAction(pinText(isPinned), pinToggle);
+	const auto pinAction = _addAction(pinText(isPinned), pinToggle);
 
 	const auto lifetime = Ui::CreateChild<rpl::lifetime>(pinAction);
 	Notify::PeerUpdateViewer(
 		peer,
 		Notify::PeerUpdate::Flag::ChatPinnedChanged
-	) | rpl::start_with_next([peer, pinAction, pinText] {
-		auto isPinned = peer->owner().history(peer)->isPinnedDialog();
+	) | rpl::start_with_next([=] {
+		const auto history = peer->owner().history(peer);
+		const auto isPinned = history->isPinnedDialog(filterId);
 		pinAction->setText(pinText(isPinned));
 	}, *lifetime);
 }
@@ -331,20 +394,30 @@ void Filler::addToggleUnreadMark() {
 
 void Filler::addToggleArchive() {
 	const auto peer = _peer;
-	const auto archived = [&] {
+	const auto isArchived = [=] {
 		const auto history = peer->owner().historyLoaded(peer);
 		return history && history->folder();
-	}();
+	};
 	const auto toggle = [=] {
 		ToggleHistoryArchived(
 			peer->owner().history(peer),
-			!archived);
+			!isArchived());
 	};
-	_addAction(
-		(archived
+	const auto archiveAction = _addAction(
+		(isArchived()
 			? tr::lng_archived_remove(tr::now)
 			: tr::lng_archived_add(tr::now)),
 		toggle);
+
+	const auto lifetime = Ui::CreateChild<rpl::lifetime>(archiveAction);
+	Notify::PeerUpdateViewer(
+		peer,
+		Notify::PeerUpdate::Flag::FolderChanged
+	) | rpl::start_with_next([=] {
+		archiveAction->setText(isArchived()
+			? tr::lng_archived_remove(tr::now)
+			: tr::lng_archived_add(tr::now));
+	}, *lifetime);
 }
 
 void Filler::addBlockUser(not_null<UserData*> user) {
@@ -541,6 +614,9 @@ void Filler::addChannelActions(not_null<ChannelData*> channel) {
 }
 
 void Filler::fill() {
+	if (showHidePromotion()) {
+		addHidePromotion();
+	}
 	if (showToggleArchived()) {
 		addToggleArchive();
 	}
@@ -599,12 +675,12 @@ void FolderFiller::addTogglesForArchive() {
 	});
 
 	_addAction(tr::lng_context_archive_to_menu(tr::now), [=] {
-		auto toast = Ui::Toast::Config();
-		toast.text = tr::lng_context_archive_to_menu_info(tr::now);
-		toast.minWidth = toast.maxWidth = st::boxWideWidth;
-		toast.multiline = true;
-		toast.durationMs = kArchivedToastDuration;
-		Ui::Toast::Show(toast);
+		Ui::Toast::Show(Ui::Toast::Config{
+			.text = { tr::lng_context_archive_to_menu_info(tr::now) },
+			.st = &st::windowArchiveToast,
+			.durationMs = kArchivedToastDuration,
+			.multiline = true,
+		});
 
 		controller->session().settings().setArchiveInMainMenu(
 			!controller->session().settings().archiveInMainMenu());
@@ -894,11 +970,11 @@ QPointer<Ui::RpWidget> ShowSendNowMessagesBox(
 		session->data().idsToItems(items),
 		TextWithTags());
 	if (!error.isEmpty()) {
-		auto config = Ui::Toast::Config();
-		config.multiline = true;
-		config.minWidth = st::msgMinWidth;
-		config.text = error;
-		Ui::Toast::Show(config);
+		Ui::Toast::Show(Ui::Toast::Config{
+			.text = { error },
+			.st = &st::historyErrorToast,
+			.multiline = true,
+		});
 		return { nullptr };
 	}
 	const auto box = std::make_shared<QPointer<Ui::BoxContent>>();
@@ -1005,16 +1081,16 @@ void PeerMenuAddMuteAction(
 //
 void ToggleHistoryArchived(not_null<History*> history, bool archived) {
 	const auto callback = [=] {
-		auto toast = Ui::Toast::Config();
-		toast.text = archived
-			? tr::lng_archived_added(tr::now)
-			: tr::lng_archived_removed(tr::now);
-		toast.minWidth = toast.maxWidth = st::boxWideWidth;
-		toast.multiline = true;
-		if (archived) {
-			toast.durationMs = kArchivedToastDuration;
-		}
-		Ui::Toast::Show(toast);
+		Ui::Toast::Show(Ui::Toast::Config{
+			.text = { (archived
+				? tr::lng_archived_added(tr::now)
+				: tr::lng_archived_removed(tr::now)) },
+			.st = &st::windowArchiveToast,
+			.durationMs = (archived
+				? kArchivedToastDuration
+				: Ui::Toast::kDefaultDuration),
+			.multiline = true,
+		});
 	};
 	history->session().api().toggleHistoryArchived(
 		history,
@@ -1041,9 +1117,10 @@ Fn<void()> DeleteAndLeaveHandler(not_null<PeerData*> peer) {
 void FillPeerMenu(
 		not_null<SessionController*> controller,
 		not_null<PeerData*> peer,
+		FilterId filterId,
 		const PeerMenuCallback &callback,
 		PeerMenuSource source) {
-	Filler filler(controller, peer, callback, source);
+	Filler filler(controller, peer, filterId, callback, source);
 	filler.fill();
 }
 

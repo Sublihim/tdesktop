@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/changelogs.h"
 #include "main/main_account.h"
 #include "chat_helpers/stickers_emoji_pack.h"
+#include "chat_helpers/stickers_dice_pack.h"
 #include "storage/file_download.h"
 #include "storage/download_manager_mtproto.h"
 #include "storage/file_upload.h"
@@ -56,6 +57,7 @@ Session::Session(
 , _data(std::make_unique<Data::Session>(this))
 , _user(_data->processUser(user))
 , _emojiStickersPack(std::make_unique<Stickers::EmojiPack>(this))
+, _diceStickersPacks(std::make_unique<Stickers::DicePacks>(this))
 , _changelogs(Core::Changelogs::Create(this))
 , _supportHelper(Support::Helper::Create(this)) {
 	Core::App().passcodeLockChanges(
@@ -67,9 +69,9 @@ Session::Session(
 		notifications().updateAll();
 	}, _lifetime);
 	subscribe(Global::RefConnectionTypeChanged(), [=] {
-		_api->refreshProxyPromotion();
+		_api->refreshTopPromotion();
 	});
-	_api->refreshProxyPromotion();
+	_api->refreshTopPromotion();
 	_api->requestTermsUpdate();
 	_api->requestFullPeer(_user);
 

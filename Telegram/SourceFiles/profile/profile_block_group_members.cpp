@@ -192,7 +192,7 @@ void GroupMembersWidget::refreshMembers() {
 		fillChatMembers(chat);
 	} else if (const auto megagroup = peer()->asMegagroup()) {
 		auto &megagroupInfo = megagroup->mgInfo;
-		if (megagroupInfo->lastParticipants.empty() || megagroup->lastParticipantsCountOutdated()) {
+		if (megagroup->lastParticipantsRequestNeeded()) {
 			Auth().api().requestLastParticipants(megagroup);
 		}
 		fillMegagroupMembers(megagroup);
@@ -290,7 +290,8 @@ void GroupMembersWidget::setItemFlags(
 	using AdminState = Item::AdminState;
 	const auto user = getMember(item)->user();
 	const auto isCreator = (peerFromUser(chat->creator) == item->peer->id);
-	const auto isAdmin = chat->hasAdminRights();
+	const auto isAdmin = (item->peer->isSelf() && chat->hasAdminRights())
+		|| chat->admins.contains(user);
 	const auto adminState = isCreator
 		? AdminState::Creator
 		: isAdmin

@@ -36,6 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "observer_peer.h"
 #include "storage/storage_databases.h"
 #include "mainwidget.h"
+#include "core/file_utilities.h"
 #include "main/main_account.h"
 #include "media/view/media_view_overlay_widget.h"
 #include "mtproto/dc_options.h"
@@ -300,7 +301,7 @@ void Application::showDocument(not_null<DocumentData*> document, HistoryItem *it
 	if (cUseExternalVideoPlayer()
 		&& document->isVideoFile()
 		&& document->loaded()) {
-		QDesktopServices::openUrl(QUrl("file:///" + document->location(false).fname));
+		File::Launch(document->location(false).fname);
 	} else {
 		_mediaView->showDocument(document, item);
 		_mediaView->activateWindow();
@@ -502,13 +503,6 @@ void Application::switchDebugMode() {
 	}
 }
 
-void Application::switchWorkMode() {
-	Global::SetDialogsModeEnabled(!Global::DialogsModeEnabled());
-	Global::SetDialogsMode(Dialogs::Mode::All);
-	Local::writeUserSettings();
-	App::restart();
-}
-
 void Application::switchTestMode() {
 	if (cTestMode()) {
 		QFile(cWorkingDir() + qsl("tdata/withtestmode")).remove();
@@ -520,6 +514,21 @@ void Application::switchTestMode() {
 			f.close();
 		}
 		cSetTestMode(true);
+	}
+	App::restart();
+}
+
+void Application::switchFreeType() {
+	if (cUseFreeType()) {
+		QFile(cWorkingDir() + qsl("tdata/withfreetype")).remove();
+		cSetUseFreeType(false);
+	} else {
+		QFile f(cWorkingDir() + qsl("tdata/withfreetype"));
+		if (f.open(QIODevice::WriteOnly)) {
+			f.write("1");
+			f.close();
+		}
+		cSetUseFreeType(true);
 	}
 	App::restart();
 }

@@ -40,6 +40,7 @@ constexpr auto kTestModeDcIdShift = 10000;
 constexpr auto kCheckSentRequestsEach = 1 * crl::time(1000);
 constexpr auto kKeyOldEnoughForDestroy = 60 * crl::time(1000);
 constexpr auto kSentContainerLives = 600 * crl::time(1000);
+constexpr auto kFastRequestDuration = crl::time(500);
 
 // If we can't connect for this time we will ask _instance to update config.
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
@@ -56,6 +57,8 @@ constexpr auto kSendStateRequestWaiting = crl::time(1000);
 
 // How much time to wait for some more requests, when sending msg acks.
 constexpr auto kAckSendWaiting = 10 * crl::time(1000);
+
+auto SyncTimeRequestDuration = kFastRequestDuration;
 
 using namespace details;
 
@@ -482,6 +485,27 @@ mtpMsgId SessionPrivate::placeToContainer(
 	return msgId;
 }
 
+MTPVector<MTPJSONObjectValue> SessionPrivate::prepareInitParams() {
+	const auto local = QDateTime::currentDateTime();
+	const auto utc = QDateTime(local.date(), local.time(), Qt::UTC);
+	const auto shift = base::unixtime::now() - (TimeId)::time(nullptr);
+	const auto delta = int(utc.toTime_t()) - int(local.toTime_t()) - shift;
+	auto sliced = delta;
+	while (sliced < -12 * 3600) {
+		sliced += 24 * 3600;
+	}
+	while (sliced > 14 * 3600) {
+		sliced -= 24 * 3600;
+	}
+	const auto sign = (sliced < 0) ? -1 : 1;
+	const auto rounded = std::round(std::abs(sliced) / 900.) * 900 * sign;
+	return MTP_vector<MTPJSONObjectValue>(
+		1,
+		MTP_jsonObjectValue(
+			MTP_string("tz_offset"),
+			MTP_jsonNumber(MTP_double(rounded))));
+}
+
 void SessionPrivate::tryToSend() {
 	DEBUG_LOG(("MTP Info: tryToSend for dc %1.").arg(_shiftedDcId));
 	if (!_connection) {
@@ -612,7 +636,8 @@ void SessionPrivate::tryToSend() {
 			: MTPInputClientProxy();
 		using Flag = MTPInitConnection<SerializedRequest>::Flag;
 		initWrapper = MTPInitConnection<SerializedRequest>(
-			MTP_flags(mtprotoProxy ? Flag::f_proxy : Flag(0)),
+			MTP_flags(Flag::f_params
+				| (mtprotoProxy ? Flag::f_proxy : Flag(0))),
 			MTP_int(ApiId),
 			MTP_string(deviceModel),
 			MTP_string(systemVersion),
@@ -621,6 +646,7 @@ void SessionPrivate::tryToSend() {
 			MTP_string(langPackName),
 			MTP_string(cloudLangCode),
 			clientProxyFields,
+			MTP_jsonObject(prepareInitParams()),
 			SerializedRequest());
 		initSizeInInts = (tl::count_length(initWrapper) >> 2) + 2;
 		initSize = initSizeInInts * sizeof(mtpPrime);
@@ -1444,8 +1470,12 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 			return badTime ? HandleResult::Ignored : HandleResult::Success;
 		}
 
-		if (badTime && !requestsFixTimeSalt(ids, serverTime, serverSalt)) {
-			return HandleResult::Ignored;
+		if (badTime) {
+			if (!requestsFixTimeSalt(ids, serverTime, serverSalt)) {
+				return HandleResult::Ignored;
+			}
+		} else {
+			correctUnixtimeByFastRequest(ids, serverTime);
 		}
 		requestsAcked(ids);
 	} return HandleResult::Success;
@@ -1497,7 +1527,8 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 				if (serverSalt) {
 					_sessionSalt = serverSalt;
 				}
-				base::unixtime::update(serverTime, true);
+
+				correctUnixtimeWithBadLocal(serverTime);
 
 				DEBUG_LOG(("Message Info: unixtime updated, now %1, resending in container...").arg(serverTime));
 
@@ -1507,7 +1538,7 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 					if (serverSalt) {
 						_sessionSalt = serverSalt;
 					}
-					base::unixtime::update(serverTime, true);
+					correctUnixtimeWithBadLocal(serverTime);
 					badTime = false;
 				}
 				LOG(("Message Info: bad message notification received, msgId %1, error_code %2").arg(data.vbad_msg_id().v).arg(errorCode));
@@ -1557,7 +1588,7 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 		}
 
 		_sessionSalt = data.vnew_server_salt().v;
-		base::unixtime::update(serverTime);
+		correctUnixtimeWithBadLocal(serverTime);
 
 		if (setState(ConnectedState, ConnectingState)) {
 			resendAll();
@@ -1589,7 +1620,7 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 			if (serverSalt) {
 				_sessionSalt = serverSalt; // requestsFixTimeSalt with no lookup
 			}
-			base::unixtime::update(serverTime, true);
+			correctUnixtimeWithBadLocal(serverTime);
 
 			DEBUG_LOG(("Message Info: unixtime updated from mtpc_msgs_state_info, now %1").arg(serverTime));
 
@@ -1933,18 +1964,46 @@ mtpBuffer SessionPrivate::ungzip(const mtpPrime *from, const mtpPrime *end) cons
 }
 
 bool SessionPrivate::requestsFixTimeSalt(const QVector<MTPlong> &ids, int32 serverTime, uint64 serverSalt) {
-	uint32 idsCount = ids.size();
-
-	for (uint32 i = 0; i < idsCount; ++i) {
-		if (wasSent(ids[i].v)) {// found such msg_id in recent acked requests or in recent sent requests
+	for (const auto &id : ids) {
+		if (wasSent(id.v)) {
+			// Found such msg_id in recent acked or in recent sent requests.
 			if (serverSalt) {
 				_sessionSalt = serverSalt;
 			}
-			base::unixtime::update(serverTime, true);
+			correctUnixtimeWithBadLocal(serverTime);
 			return true;
 		}
 	}
 	return false;
+}
+
+void SessionPrivate::correctUnixtimeByFastRequest(
+		const QVector<MTPlong> &ids,
+		TimeId serverTime) {
+	const auto now = crl::now();
+
+	QReadLocker locker(_sessionData->haveSentMutex());
+	const auto &haveSent = _sessionData->haveSentMap();
+	for (const auto &id : ids) {
+		const auto i = haveSent.find(id.v);
+		if (i == haveSent.end()) {
+			continue;
+		}
+		const auto duration = (now - i->second->lastSentTime);
+		if (duration < 0 || duration > SyncTimeRequestDuration) {
+			continue;
+		}
+		locker.unlock();
+
+		SyncTimeRequestDuration = duration;
+		base::unixtime::update(serverTime, true);
+		return;
+	}
+}
+
+void SessionPrivate::correctUnixtimeWithBadLocal(TimeId serverTime) {
+	SyncTimeRequestDuration = kFastRequestDuration;
+	base::unixtime::update(serverTime, true);
 }
 
 void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse) {
@@ -2007,9 +2066,10 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 				} else {
 					DEBUG_LOG(("Message Info: acked msgId %1 that was prepared to resend, requestId %2").arg(msgId).arg(requestId));
 				}
-				toSend.erase(j);
 
 				_ackedIds.emplace(msgId, j->second->requestId);
+
+				toSend.erase(j);
 				continue;
 			}
 			DEBUG_LOG(("Message Info: msgId %1 was not found in recent resent either").arg(msgId));

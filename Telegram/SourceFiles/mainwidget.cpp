@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
+#include "data/data_chat_filters.h"
 #include "data/data_scheduled_messages.h"
 #include "data/data_file_origin.h"
 #include "data/data_histories.h"
@@ -781,10 +782,6 @@ bool MainWidget::notify_switchInlineBotButtonReceived(const QString &query, User
 
 void MainWidget::notify_userIsBotChanged(UserData *bot) {
 	_history->notify_userIsBotChanged(bot);
-}
-
-void MainWidget::notify_historyMuteUpdated(History *history) {
-	_dialogs->notify_historyMuteUpdated(history);
 }
 
 void MainWidget::clearHider(not_null<Window::HistoryHider*> instance) {
@@ -1899,8 +1896,8 @@ void MainWidget::showNewSection(
 	using Column = Window::Column;
 
 	auto saveInStack = (params.way == SectionShow::Way::Forward);
-	auto thirdSectionTop = getThirdSectionTop();
-	auto newThirdGeometry = QRect(
+	const auto thirdSectionTop = getThirdSectionTop();
+	const auto newThirdGeometry = QRect(
 		width() - st::columnMinimalWidthThird,
 		thirdSectionTop,
 		st::columnMinimalWidthThird,
@@ -1912,9 +1909,10 @@ void MainWidget::showNewSection(
 			Column::Third,
 			newThirdGeometry)
 		: nullptr;
+	const auto layerRect = parentWidget()->rect();
 	if (newThirdSection) {
 		saveInStack = false;
-	} else if (auto layer = memento.createLayer(_controller, rect())) {
+	} else if (auto layer = memento.createLayer(_controller, layerRect)) {
 		if (params.activation != anim::activation::background) {
 			Ui::hideLayer(anim::type::instant);
 		}
@@ -2183,13 +2181,17 @@ QPixmap MainWidget::grabForShowAnimation(const Window::SectionSlideParams &param
 }
 
 void MainWidget::repaintDialogRow(
-		Dialogs::Mode list,
+		FilterId filterId,
 		not_null<Dialogs::Row*> row) {
-	_dialogs->repaintDialogRow(list, row);
+	_dialogs->repaintDialogRow(filterId, row);
 }
 
 void MainWidget::repaintDialogRow(Dialogs::RowDescriptor row) {
 	_dialogs->repaintDialogRow(row);
+}
+
+void MainWidget::refreshDialogRow(Dialogs::RowDescriptor row) {
+	_dialogs->refreshDialogRow(row);
 }
 
 void MainWidget::windowShown() {
@@ -2382,11 +2384,11 @@ void MainWidget::updateControlsGeometry() {
 				Window::SectionShow::Way::ClearStack,
 				anim::type::instant,
 				anim::activation::background);
-			if (session().settings().tabbedSelectorSectionEnabled()) {
-				_history->pushTabbedSelectorToThirdSection(params);
-			} else if (session().settings().thirdSectionInfoEnabled()) {
-				const auto active = _controller->activeChatCurrent();
-				if (const auto peer = active.peer()) {
+			const auto active = _controller->activeChatCurrent();
+			if (const auto peer = active.peer()) {
+				if (session().settings().tabbedSelectorSectionEnabled()) {
+					_history->pushTabbedSelectorToThirdSection(peer, params);
+				} else if (session().settings().thirdSectionInfoEnabled()) {
 					_controller->showSection(
 						Info::Memento::Default(peer),
 						params.withThirdColumn());
@@ -2635,9 +2637,9 @@ void MainWidget::updateThirdColumnToCurrentChat(
 			std::move(*thirdSectionForCurrentMainSection(key)),
 			params.withThirdColumn());
 	};
-	auto switchTabbedFast = [&] {
+	auto switchTabbedFast = [&](not_null<PeerData*> peer) {
 		saveOldThirdSection();
-		_history->pushTabbedSelectorToThirdSection(params);
+		return _history->pushTabbedSelectorToThirdSection(peer, params);
 	};
 	if (Adaptive::ThreeColumn()
 		&& session().settings().tabbedSelectorSectionEnabled()
@@ -2646,9 +2648,10 @@ void MainWidget::updateThirdColumnToCurrentChat(
 			switchInfoFast();
 			session().settings().setTabbedSelectorSectionEnabled(true);
 			session().settings().setTabbedReplacedWithInfo(true);
-		} else if (session().settings().tabbedReplacedWithInfo()) {
+		} else if (session().settings().tabbedReplacedWithInfo()
+			&& key.history()
+			&& switchTabbedFast(key.history()->peer)) {
 			session().settings().setTabbedReplacedWithInfo(false);
-			switchTabbedFast();
 		}
 	} else {
 		session().settings().setTabbedReplacedWithInfo(false);
@@ -4053,6 +4056,12 @@ void MainWidget::feedUpdate(const MTPUpdate &update) {
 		const auto &data = update.c_updateFolderPeers();
 
 		ptsUpdateAndApply(data.vpts().v, data.vpts_count().v, update);
+	} break;
+
+	case mtpc_updateDialogFilter:
+	case mtpc_updateDialogFilterOrder:
+	case mtpc_updateDialogFilters: {
+		session().data().chatsFilters().apply(update);
 	} break;
 
 	// Deleted messages.

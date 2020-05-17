@@ -434,7 +434,7 @@ void AppendEmojiPacks(std::vector<PickerScrubberItem> &to) {
 	if (std::abs(_startPosition - currentPosition) > step) {
 		const auto delta = (currentPosition > _startPosition) ? 1 : -1;
 		const auto newIndex = _tempIndex + delta;
-		const auto &order = Auth().data().pinnedChatsOrder(nullptr);
+		const auto &order = Auth().data().pinnedChatsOrder(nullptr, FilterId());
 
 		// In case the order has been changed from another device
 		// while the user is dragging the dialog.
@@ -444,6 +444,7 @@ void AppendEmojiPacks(std::vector<PickerScrubberItem> &to) {
 
 		if (newIndex >= 0 && newIndex < order.size()) {
 			Auth().data().reorderTwoPinnedChats(
+				FilterId(),
 				order.at(_tempIndex).history(),
 				order.at(newIndex).history());
 			_tempIndex = newIndex;
@@ -481,6 +482,8 @@ void AppendEmojiPacks(std::vector<PickerScrubberItem> &to) {
 @implementation PinnedDialogButton {
 	rpl::lifetime _lifetime;
 	rpl::lifetime _peerChangedLifetime;
+	base::has_weak_ptr _guard;
+
 	bool isWaitingUserpicLoad;
 }
 
@@ -518,7 +521,7 @@ void AppendEmojiPacks(std::vector<PickerScrubberItem> &to) {
 	) | rpl::filter([](const Window::Theme::BackgroundUpdate &update) {
 		return update.paletteChanged();
 	}) | rpl::start_with_next([=] {
-		crl::on_main([=] {
+		crl::on_main(&_guard, [=] {
 			if (_number <= kSavedMessagesId || UseEmptyUserpic(_peer)) {
 				[self updateUserpic];
 			} else if (_peer
@@ -1322,7 +1325,7 @@ void AppendEmojiPacks(std::vector<PickerScrubberItem> &to) {
 }
 
 - (void) updatePinnedButtons {
-	const auto &order = Auth().data().pinnedChatsOrder(nullptr);
+	const auto &order = Auth().data().pinnedChatsOrder(nullptr, FilterId());
 	auto isSelfPeerPinned = false;
 	auto isArchivePinned = false;
 	PinnedDialogButton *selfChatButton;

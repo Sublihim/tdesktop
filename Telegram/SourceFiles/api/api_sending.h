@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 class History;
+class PhotoData;
 class DocumentData;
 
 namespace Api {
@@ -21,5 +22,7 @@ void SendExistingDocument(
 void SendExistingPhoto(
 	Api::MessageToSend &&message,
 	not_null<PhotoData*> photo);
+
+bool SendDice(Api::MessageToSend &message);
 
 } // namespace Api

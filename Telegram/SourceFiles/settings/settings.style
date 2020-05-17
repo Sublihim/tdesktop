@@ -52,6 +52,7 @@ settingsDividerLabelPadding: margins(22px, 10px, 22px, 19px);
 settingsIconInformation: icon {{ "settings_information", menuIconFg }};
 settingsIconNotifications: icon {{ "settings_notifications", menuIconFg }};
 settingsIconChat: icon {{ "settings_chat", menuIconFg }};
+settingsIconFolders: icon {{ "settings_folders", menuIconFg }};
 settingsIconGeneral: icon {{ "settings_advanced", menuIconFg }};
 settingsIconPrivacySecurity: icon {{ "settings_privacy_security", menuIconFg }};
 settingsIconLanguage: icon {{ "settings_language", menuIconFg }};
@@ -199,13 +200,13 @@ autoDownloadLimitButton: SettingsButton(settingsButton) {
 settingsAudioVolumeSlider: MediaSlider(defaultContinuousSlider) {
 	seekSize: size(15px, 15px);
 }
-settingsAudioVolumeSliderPadding: margins(23px, 5px, 20px, 10px);
+settingsAudioVolumeSliderPadding: margins(22px, 5px, 20px, 10px);
 settingsAudioVolumeLabel: LabelSimple(defaultLabelSimple) {
 	font: boxTextFont;
 	textFg: windowBoldFg;
 }
 settingsAudioVolumeLabelPadding: margins(22px, 11px, 22px, 11px);
-settingsLevelMeterPadding: margins(23px, 10px, 20px, 10px);
+settingsLevelMeterPadding: margins(22px, 10px, 20px, 10px);
 
 settingsForwardPrivacyPadding: 8px;
 settingsForwardPrivacyArrowSkip: 32px;
@@ -215,6 +216,9 @@ settingsForwardPrivacyTooltipPadding: margins(8px, 6px, 8px, 6px);
 settingsAccentColorSize: 24px;
 settingsAccentColorSkip: 4px;
 settingsAccentColorLine: 3px;
+
+settingsFilterIconSkip: 68px;
+settingsFilterIconLeft: 17px;
 
 dictionariesSectionButton: SettingsButton(settingsUpdateToggle) {
 	font: font(14px semibold);

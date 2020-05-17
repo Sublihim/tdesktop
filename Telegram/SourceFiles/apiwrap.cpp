@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "apiwrap.h"
 
+#include "api/api_sending.h"
 #include "api/api_text_entities.h"
 #include "api/api_self_destruct.h"
 #include "api/api_sensitive_content.h"
@@ -25,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat.h"
 #include "data/data_user.h"
 #include "data/data_cloud_themes.h"
+#include "data/data_chat_filters.h"
 #include "data/data_histories.h"
 #include "dialogs/dialogs_key.h"
 #include "core/core_cloud_password.h"
@@ -86,8 +88,8 @@ constexpr auto kMaxUsersPerInvite = 100;
 // that was added to this chat.
 constexpr auto kForwardMessagesOnAdd = 100;
 
-constexpr auto kProxyPromotionInterval = TimeId(60 * 60);
-constexpr auto kProxyPromotionMinDelay = TimeId(10);
+constexpr auto kTopPromotionInterval = TimeId(60 * 60);
+constexpr auto kTopPromotionMinDelay = TimeId(10);
 constexpr auto kSmallDelayMs = 5;
 constexpr auto kUnreadMentionsPreloadIfLess = 5;
 constexpr auto kUnreadMentionsFirstRequestLimit = 10;
@@ -235,7 +237,7 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
 , _dialogsLoadState(std::make_unique<DialogsLoadState>())
 , _fileLoader(std::make_unique<TaskQueue>(kFileLoaderQueueStopTimeout))
 //, _feedReadTimer([=] { readFeeds(); }) // #feed
-, _proxyPromotionTimer([=] { refreshProxyPromotion(); })
+, _topPromotionTimer([=] { refreshTopPromotion(); })
 , _updateNotifySettingsTimer([=] { sendNotifySettingsUpdates(); })
 , _selfDestruct(std::make_unique<Api::SelfDestruct>(this))
 , _sensitiveContent(std::make_unique<Api::SensitiveContent>(this)) {
@@ -245,6 +247,13 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
 		_session->uploader().photoReady(
 		) | rpl::start_with_next([=](const Storage::UploadedPhoto &data) {
 			photoUploadReady(data.fullId, data.file);
+		}, _session->lifetime());
+
+		_session->data().chatsFilters().changed(
+		) | rpl::filter([=] {
+			return _session->data().chatsFilters().archiveNeeded();
+		}) | rpl::start_with_next([=] {
+			requestMoreDialogsIfNeeded();
 		}, _session->lifetime());
 
 		setupSupportMode();
@@ -279,13 +288,13 @@ void ApiWrap::requestChangelog(
 	).send();
 }
 
-void ApiWrap::refreshProxyPromotion() {
+void ApiWrap::refreshTopPromotion() {
 	const auto now = base::unixtime::now();
-	const auto next = (_proxyPromotionNextRequestTime != 0)
-		? _proxyPromotionNextRequestTime
+	const auto next = (_topPromotionNextRequestTime != 0)
+		? _topPromotionNextRequestTime
 		: now;
-	if (_proxyPromotionRequestId) {
-		getProxyPromotionDelayed(now, next);
+	if (_topPromotionRequestId) {
+		getTopPromotionDelayed(now, next);
 		return;
 	}
 	const auto key = [&]() -> std::pair<QString, uint32> {
@@ -298,51 +307,51 @@ void ApiWrap::refreshProxyPromotion() {
 		}
 		return { proxy.host, proxy.port };
 	}();
-	if (_proxyPromotionKey == key && now < next) {
-		getProxyPromotionDelayed(now, next);
+	if (_topPromotionKey == key && now < next) {
+		getTopPromotionDelayed(now, next);
 		return;
 	}
-	_proxyPromotionKey = key;
-	if (key.first.isEmpty() || !key.second) {
-		proxyPromotionDone(MTP_help_proxyDataEmpty(
-			MTP_int(base::unixtime::now() + kProxyPromotionInterval)));
-		return;
-	}
-	_proxyPromotionRequestId = request(MTPhelp_GetProxyData(
-	)).done([=](const MTPhelp_ProxyData &result) {
-		_proxyPromotionRequestId = 0;
-		proxyPromotionDone(result);
+	_topPromotionKey = key;
+	_topPromotionRequestId = request(MTPhelp_GetPromoData(
+	)).done([=](const MTPhelp_PromoData &result) {
+		_topPromotionRequestId = 0;
+		topPromotionDone(result);
 	}).fail([=](const RPCError &error) {
-		_proxyPromotionRequestId = 0;
+		_topPromotionRequestId = 0;
 		const auto now = base::unixtime::now();
-		const auto next = _proxyPromotionNextRequestTime = now
-			+ kProxyPromotionInterval;
-		if (!_proxyPromotionTimer.isActive()) {
-			getProxyPromotionDelayed(now, next);
+		const auto next = _topPromotionNextRequestTime = now
+			+ kTopPromotionInterval;
+		if (!_topPromotionTimer.isActive()) {
+			getTopPromotionDelayed(now, next);
 		}
 	}).send();
 }
 
-void ApiWrap::getProxyPromotionDelayed(TimeId now, TimeId next) {
-	_proxyPromotionTimer.callOnce(std::min(
-		std::max(next - now, kProxyPromotionMinDelay),
-		kProxyPromotionInterval) * crl::time(1000));
+void ApiWrap::getTopPromotionDelayed(TimeId now, TimeId next) {
+	_topPromotionTimer.callOnce(std::min(
+		std::max(next - now, kTopPromotionMinDelay),
+		kTopPromotionInterval) * crl::time(1000));
 };
 
-void ApiWrap::proxyPromotionDone(const MTPhelp_ProxyData &proxy) {
-	_proxyPromotionNextRequestTime = proxy.match([&](const auto &data) {
+void ApiWrap::topPromotionDone(const MTPhelp_PromoData &proxy) {
+	_topPromotionNextRequestTime = proxy.match([&](const auto &data) {
 		return data.vexpires().v;
 	});
-	getProxyPromotionDelayed(base::unixtime::now(), _proxyPromotionNextRequestTime);
+	getTopPromotionDelayed(
+		base::unixtime::now(),
+		_topPromotionNextRequestTime);
 
-	proxy.match([&](const MTPDhelp_proxyDataEmpty &data) {
-		_session->data().setProxyPromoted(nullptr);
-	}, [&](const MTPDhelp_proxyDataPromo &data) {
+	proxy.match([&](const MTPDhelp_promoDataEmpty &data) {
+		_session->data().setTopPromoted(nullptr, QString(), QString());
+	}, [&](const MTPDhelp_promoData &data) {
 		_session->data().processChats(data.vchats());
 		_session->data().processUsers(data.vusers());
 		const auto peerId = peerFromMTP(data.vpeer());
 		const auto peer = _session->data().peer(peerId);
-		_session->data().setProxyPromoted(peer);
+		_session->data().setTopPromoted(
+			peer,
+			data.vpsa_type().value_or_empty(),
+			data.vpsa_message().value_or_empty());
 		if (const auto history = _session->data().historyLoaded(peer)) {
 			history->owner().histories().requestDialogEntry(history);
 		}
@@ -483,7 +492,9 @@ void ApiWrap::applyUpdates(
 }
 
 void ApiWrap::savePinnedOrder(Data::Folder *folder) {
-	const auto &order = _session->data().pinnedChatsOrder(folder);
+	const auto &order = _session->data().pinnedChatsOrder(
+		folder,
+		FilterId());
 	const auto input = [](const Dialogs::Key &key) {
 		if (const auto history = key.history()) {
 			return MTP_inputDialogPeer(history->peer->input);
@@ -512,7 +523,7 @@ void ApiWrap::toggleHistoryArchived(
 	if (const auto already = _historyArchivedRequests.take(history)) {
 		request(already->first).cancel();
 	}
-	const auto isPinned = history->isPinnedDialog();
+	const auto isPinned = history->isPinnedDialog(0);
 	const auto archiveId = Data::Folder::kId;
 	const auto requestId = request(MTPfolders_EditPeerFolders(
 		MTP_vector<MTPInputFolderPeer>(
@@ -853,13 +864,11 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
 				count);
 		});
 
-		if (!folder) {
-			if (!_dialogsLoadState || !_dialogsLoadState->listReceived) {
-				refreshDialogsLoadBlocked();
-			}
-			requestDialogs(folder);
-			requestContacts();
+		if (!folder
+			&& (!_dialogsLoadState || !_dialogsLoadState->listReceived)) {
+			refreshDialogsLoadBlocked();
 		}
+		requestMoreDialogsIfNeeded();
 		_session->data().chatsListChanged(folder);
 	}).fail([=](const RPCError &error) {
 		dialogsLoadState(folder)->requestId = 0;
@@ -883,6 +892,25 @@ void ApiWrap::refreshDialogsLoadBlocked() {
 		&& (_dialogsLoadTill > 0)
 		&& (_dialogsLoadState->offsetDate > 0)
 		&& (_dialogsLoadState->offsetDate <= _dialogsLoadTill);
+}
+
+void ApiWrap::requestMoreDialogsIfNeeded() {
+	const auto dialogsReady = !_dialogsLoadState
+		|| _dialogsLoadState->listReceived;
+	if (_session->data().chatsFilters().loadNextExceptions(dialogsReady)) {
+		return;
+	} else if (_dialogsLoadState && !_dialogsLoadState->listReceived) {
+		if (_dialogsLoadState->requestId) {
+			return;
+		}
+		requestDialogs(nullptr);
+	} else if (const auto folder = _session->data().folderLoaded(
+			Data::Folder::kId)) {
+		if (_session->data().chatsFilters().archiveNeeded()) {
+			requestMoreDialogs(folder);
+		}
+	}
+	requestContacts();
 }
 
 void ApiWrap::updateDialogsOffset(
@@ -1503,7 +1531,8 @@ void ApiWrap::applyLastParticipantsList(
 	channel->mgInfo->lastAdmins.clear();
 	channel->mgInfo->lastRestricted.clear();
 	channel->mgInfo->lastParticipants.clear();
-	channel->mgInfo->lastParticipantsStatus = MegagroupInfo::LastParticipantsUpToDate;
+	channel->mgInfo->lastParticipantsStatus = MegagroupInfo::LastParticipantsUpToDate
+		| MegagroupInfo::LastParticipantsOnceReceived;
 
 	auto botStatus = channel->mgInfo->botStatus;
 	const auto emptyAdminRights = MTP_chatAdminRights(MTP_flags(0));
@@ -4792,7 +4821,7 @@ void ApiWrap::sendMessage(MessageToSend &&message) {
 	action.generateLocal = true;
 	sendAction(action);
 
-	if (!peer->canWrite()) {
+	if (!peer->canWrite() || Api::SendDice(message)) {
 		return;
 	}
 	Local::saveRecentSentHashtags(textWithTags.text);
@@ -5725,16 +5754,6 @@ void ApiWrap::createPoll(
 	if (action.options.scheduled) {
 		sendFlags |= MTPmessages_SendMedia::Flag::f_schedule_date;
 	}
-
-	const auto inputFlags = data.quiz()
-		? MTPDinputMediaPoll::Flag::f_correct_answers
-		: MTPDinputMediaPoll::Flag(0);
-	auto correct = QVector<MTPbytes>();
-	for (const auto &answer : data.answers) {
-		if (answer.correct) {
-			correct.push_back(MTP_bytes(answer.option));
-		}
-	}
 	auto &histories = history->owner().histories();
 	const auto requestType = Data::Histories::RequestType::Send;
 	histories.sendRequest(history, requestType, [=](Fn<void()> finish) {
@@ -5743,10 +5762,7 @@ void ApiWrap::createPoll(
 			MTP_flags(sendFlags),
 			peer->input,
 			MTP_int(replyTo),
-			MTP_inputMediaPoll(
-				MTP_flags(inputFlags),
-				PollDataToMTP(&data),
-				MTP_vector<MTPbytes>(correct)),
+			PollDataToInputMedia(&data),
 			MTP_string(),
 			MTP_long(rand_value<uint64>()),
 			MTPReplyMarkup(),
@@ -5823,25 +5839,12 @@ void ApiWrap::closePoll(not_null<HistoryItem*> item) {
 	if (!poll) {
 		return;
 	}
-
-	const auto inputFlags = poll->quiz()
-		? MTPDinputMediaPoll::Flag::f_correct_answers
-		: MTPDinputMediaPoll::Flag(0);
-	auto correct = QVector<MTPbytes>();
-	for (const auto &answer : poll->answers) {
-		if (answer.correct) {
-			correct.push_back(MTP_bytes(answer.option));
-		}
-	}
 	const auto requestId = request(MTPmessages_EditMessage(
 		MTP_flags(MTPmessages_EditMessage::Flag::f_media),
 		item->history()->peer->input,
 		MTP_int(item->id),
 		MTPstring(),
-		MTP_inputMediaPoll(
-			MTP_flags(inputFlags),
-			PollDataToMTP(poll, true),
-			MTP_vector<MTPbytes>(correct)),
+		PollDataToInputMedia(poll, true),
 		MTPReplyMarkup(),
 		MTPVector<MTPMessageEntity>(),
 		MTP_int(0) // schedule_date

@@ -277,10 +277,6 @@ bool switchInlineBotButtonReceived(const QString &query, UserData *samePeerBot, 
 	return false;
 }
 
-void historyMuteUpdated(History *history) {
-	if (MainWidget *m = App::main()) m->notify_historyMuteUpdated(history);
-}
-
 void unreadCounterUpdated() {
 	Global::RefHandleUnreadCounterUpdate().call();
 }
@@ -314,8 +310,7 @@ struct Data {
 	bool AdaptiveForWide = true;
 	base::Observable<void> AdaptiveChanged;
 
-	bool DialogsModeEnabled = false;
-	Dialogs::Mode DialogsMode = Dialogs::Mode::All;
+	bool DialogsFiltersEnabled = false;
 	bool ModerateModeEnabled = false;
 
 	bool ScreenIsLocked = false;
@@ -386,7 +381,9 @@ struct Data {
 	bool VoiceMsgPlaybackDoubled = false;
 	bool SoundNotify = true;
 	bool DesktopNotify = true;
+	bool FlashBounceNotify = true;
 	bool RestoreSoundNotifyFromTray = false;
+	bool RestoreFlashBounceNotifyFromTray = false;
 	DBINotifyView NotifyView = dbinvShowPreview;
 	bool NativeNotifications = false;
 	int NotificationsCount = 3;
@@ -444,8 +441,7 @@ DefineVar(Global, Adaptive::ChatLayout, AdaptiveChatLayout);
 DefineVar(Global, bool, AdaptiveForWide);
 DefineRefVar(Global, base::Observable<void>, AdaptiveChanged);
 
-DefineVar(Global, bool, DialogsModeEnabled);
-DefineVar(Global, Dialogs::Mode, DialogsMode);
+DefineVar(Global, bool, DialogsFiltersEnabled);
 DefineVar(Global, bool, ModerateModeEnabled);
 
 DefineVar(Global, bool, ScreenIsLocked);
@@ -514,7 +510,9 @@ DefineRefVar(Global, base::Observable<void>, DownloadPathChanged);
 DefineVar(Global, bool, VoiceMsgPlaybackDoubled);
 DefineVar(Global, bool, SoundNotify);
 DefineVar(Global, bool, DesktopNotify);
+DefineVar(Global, bool, FlashBounceNotify);
 DefineVar(Global, bool, RestoreSoundNotifyFromTray);
+DefineVar(Global, bool, RestoreFlashBounceNotifyFromTray);
 DefineVar(Global, DBINotifyView, NotifyView);
 DefineVar(Global, bool, NativeNotifications);
 DefineVar(Global, int, NotificationsCount);

@@ -20,6 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/share_box.h"
 #include "boxes/connection_box.h"
 #include "boxes/sticker_set_box.h"
+#include "boxes/sessions_box.h"
+#include "boxes/language_box.h"
 #include "passport/passport_form_controller.h"
 #include "window/window_session_controller.h"
 #include "data/data_session.h"
@@ -27,6 +29,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_cloud_themes.h"
 #include "data/data_channel.h"
 #include "media/player/media_player_instance.h"
+#include "window/window_session_controller.h"
+#include "settings/settings_common.h"
 #include "mainwindow.h"
 #include "mainwidget.h"
 #include "main/main_session.h"
@@ -98,12 +102,21 @@ bool ShowTheme(
 	return true;
 }
 
+void ShowLanguagesBox() {
+	static auto Guard = base::binary_guard();
+	Guard = LanguageBox::Show();
+}
+
 bool SetLanguage(
 		Main::Session *session,
 		const Match &match,
 		const QVariant &context) {
-	const auto languageId = match->captured(1);
-	Lang::CurrentCloudManager().switchWithWarning(languageId);
+	if (match->capturedRef(1).isEmpty()) {
+		ShowLanguagesBox();
+	} else {
+		const auto languageId = match->captured(2);
+		Lang::CurrentCloudManager().switchWithWarning(languageId);
+	}
 	return true;
 }
 
@@ -333,6 +346,32 @@ bool ResolvePrivatePost(
 	return true;
 }
 
+bool ResolveSettings(
+		Main::Session *session,
+		const Match &match,
+		const QVariant &context) {
+	const auto section = match->captured(1).mid(1).toLower();
+	if (!session) {
+		if (section.isEmpty()) {
+			App::wnd()->showSettings();
+			return true;
+		}
+		return false;
+	}
+	if (section == qstr("devices")) {
+		Ui::show(Box<SessionsBox>(session));
+		return true;
+	} else if (section == qstr("language")) {
+		ShowLanguagesBox();
+		return true;
+	}
+	const auto type = (section == qstr("folders"))
+		? ::Settings::Type::Folders
+		: ::Settings::Type::Main;
+	App::wnd()->sessionController()->showSettings(type);
+	return true;
+}
+
 bool HandleUnknown(
 		Main::Session *session,
 		const Match &match,
@@ -415,7 +454,7 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ShowTheme
 		},
 		{
-			qsl("^setlanguage/?\\?lang=([a-zA-Z0-9\\.\\_\\-]+)(&|$)"),
+			qsl("^setlanguage/?(\\?lang=([a-zA-Z0-9\\.\\_\\-]+))?(&|$)"),
 			SetLanguage
 		},
 		{
@@ -453,6 +492,10 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 		{
 			qsl("^privatepost/?\\?(.+)(#|$)"),
 			ResolvePrivatePost
+		},
+		{
+			qsl("^settings(/folders|/devices|/language)?$"),
+			ResolveSettings
 		},
 		{
 			qsl("^([^\\?]+)(\\?|#|$)"),

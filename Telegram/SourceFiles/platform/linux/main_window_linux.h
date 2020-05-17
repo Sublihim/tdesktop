@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
 #include "statusnotifieritem.h"
 #include <QtCore/QTemporaryFile>
+#include <QtDBus/QDBusObjectPath>
+#include <dbusmenuexporter.h>
 #endif
 
 namespace Platform {
@@ -38,14 +40,46 @@ public:
 public slots:
 	void psShowTrayMenu();
 
+#ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
+	void onSNIOwnerChanged(
+		const QString &service,
+		const QString &oldOwner,
+		const QString &newOwner);
+
+	void onAppMenuOwnerChanged(
+		const QString &service,
+		const QString &oldOwner,
+		const QString &newOwner);
+
+	void psLinuxUndo();
+	void psLinuxRedo();
+	void psLinuxCut();
+	void psLinuxCopy();
+	void psLinuxPaste();
+	void psLinuxDelete();
+	void psLinuxSelectAll();
+
+	void psLinuxBold();
+	void psLinuxItalic();
+	void psLinuxUnderline();
+	void psLinuxStrikeOut();
+	void psLinuxMonospace();
+	void psLinuxClearFormat();
+
+	void onVisibleChanged(bool visible);
+
+#endif // !TDESKTOP_DISABLE_DBUS_INTEGRATION
+
 protected:
 	void initHook() override;
 	void unreadCounterChangedHook() override;
+	void updateGlobalMenuHook() override;
 
 	void initTrayMenuHook() override;
 	bool hasTrayIcon() const override;
 
 	void workmodeUpdated(DBIWorkMode mode) override;
+	void createGlobalMenu() override;
 
 	QSystemTrayIcon *trayIcon = nullptr;
 	QMenu *trayIconMenu = nullptr;
@@ -65,12 +99,37 @@ private:
 	Ui::PopupMenu *_trayIconMenuXEmbed = nullptr;
 
 	void updateIconCounters();
+	void updateWaylandDecorationColors();
 
 #ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
 	StatusNotifierItem *_sniTrayIcon = nullptr;
 	std::unique_ptr<QTemporaryFile> _trayIconFile = nullptr;
 
-	void setSNITrayIcon(int counter, bool muted, bool firstShow = false);
+	DBusMenuExporter *_mainMenuExporter = nullptr;
+	QDBusObjectPath _mainMenuPath;
+
+	QMenu *psMainMenu = nullptr;
+	QAction *psLogout = nullptr;
+	QAction *psUndo = nullptr;
+	QAction *psRedo = nullptr;
+	QAction *psCut = nullptr;
+	QAction *psCopy = nullptr;
+	QAction *psPaste = nullptr;
+	QAction *psDelete = nullptr;
+	QAction *psSelectAll = nullptr;
+	QAction *psContacts = nullptr;
+	QAction *psAddContact = nullptr;
+	QAction *psNewGroup = nullptr;
+	QAction *psNewChannel = nullptr;
+
+	QAction *psBold = nullptr;
+	QAction *psItalic = nullptr;
+	QAction *psUnderline = nullptr;
+	QAction *psStrikeOut = nullptr;
+	QAction *psMonospace = nullptr;
+	QAction *psClearFormat = nullptr;
+
+	void setSNITrayIcon(int counter, bool muted);
 	void attachToSNITrayIcon();
 #endif // !TDESKTOP_DISABLE_DBUS_INTEGRATION
 

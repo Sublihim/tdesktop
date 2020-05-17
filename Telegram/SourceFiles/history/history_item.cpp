@@ -153,6 +153,8 @@ MediaCheckResult CheckMessageMedia(const MTPMessageMedia &media) {
 		return Result::Good;
 	}, [](const MTPDmessageMediaPoll &) {
 		return Result::Good;
+	}, [](const MTPDmessageMediaDice &) {
+		return Result::Good;
 	}, [](const MTPDmessageMediaUnsupported &) {
 		return Result::Unsupported;
 	});
@@ -265,7 +267,7 @@ PeerData *HistoryItem::displayFrom() const {
 void HistoryItem::invalidateChatListEntry() {
 	if (const auto main = App::main()) {
 		// #TODO feeds search results
-		main->repaintDialogRow({ history(), fullId() });
+		main->refreshDialogRow({ history(), fullId() });
 	}
 
 	// invalidate cache for drawInDialog
@@ -583,13 +585,11 @@ bool HistoryItem::canDeleteForEveryone(TimeId now) const {
 			return false;
 		}
 	}
-	if (!peer->isUser()) {
-		if (!toHistoryMessage()) {
+	if (!peer->isUser() && !toHistoryMessage()) {
+		return false;
+	} else if (const auto media = this->media()) {
+		if (!media->allowsRevoke(now)) {
 			return false;
-		} else if (const auto media = this->media()) {
-			if (!media->allowsRevoke()) {
-				return false;
-			}
 		}
 	}
 	if (!out()) {
@@ -768,7 +768,9 @@ bool HistoryItem::showNotification() const {
 	if (channel && !channel->amIn()) {
 		return false;
 	}
-	return (out() || _history->peer->isSelf()) ? isFromScheduled() : unread();
+	return (out() || _history->peer->isSelf())
+		? isFromScheduled()
+		: unread();
 }
 
 void HistoryItem::markClientSideAsRead() {
